@@ -1,0 +1,7 @@
+# dsh-codex-lite bundle patch: insert the ChatGPT-subscription model route and
+# nothing else. Deliberately unchanged: agent-default-model (pick an
+# openai-codex model per session or in Settings), the web-search provider, and
+# every tool. Sign in from a terminal: dsh plugin --profile web exec dsh-codex-lite login
+- insert:
+    - id: llm-openai-codex-lite
+      name: dsh-codex-lite
