@@ -140,13 +140,14 @@ npm test
 
 ## 开发
 
-`dsh plugin ... add file:<path>` 是**拷贝**安装,改了源码要重跑一次才生效:
+`dsh plugin ... add file:<path>` 是**拷贝**安装,而且重跑 `add` 并不会重新拷贝——pnpm 认为这个 `file:` 依赖没变,直接报 `Already up to date`,连版本号改了也一样。改了源码要真正生效,得先把那份拷贝删掉:
 
 ```sh
+rm -rf ~/.dsh/profiles/web/node_modules/dsh-codex-lite
 dsh plugin --profile web add file:/path/to/dsh-codex-lite
 ```
 
-用 `link:` 代替 `file:` 会装成符号链接,配合内置的客户端 HMR(每 500ms 轮询 bundle),改 `src/client.js` 可以不重启 `dsh web` 直接热更。
+迭代时更省事的是 `link:` 代替 `file:`,装成符号链接,源码即所得;配合内置的客户端 HMR(每 500ms 轮询 bundle),改 `src/client.js` 可以不重启 `dsh web` 直接热更。
 
 **一个硬约束:** `package.json` 里声明了 `dsh.client`,`src/client.js` 就必须存在于安装后的那份拷贝里——声明了却找不到文件会让 `dsh web` 直接起不来。装完、重启前先确认:
 

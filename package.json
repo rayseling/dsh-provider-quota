@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-lite",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Minimal ChatGPT-subscription model route for DeepSeek Harness: official pi-ai Codex OAuth + the official PiAiAdapter, one file credential store, a terminal login, and one Settings card for the per-model context window. No HTTP routes, no tools, no default changes.",
   "type": "module",
   "main": "src/index.js",
