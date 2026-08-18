@@ -41,28 +41,33 @@
     // Copy for someone fluent in AI but not in this codebase: context length,
     // tokens, compaction and billing tiers are words they already own, so the
     // card uses them plainly — and names nothing that exists only in here.
+    //
+    // Anything the neighbouring cards already have a word for keeps their
+    // word: two cards calling the same act "放弃修改" and "撤销" would read as
+    // two different acts.
     var TEXT = {
       zh: {
         title: 'OpenAI Codex',
         description: '调整每个模型的上下文长度。',
-        expand: '展开',
-        collapse: '收起',
+        expand: '展开设置',
+        collapse: '收起设置',
         window: '上下文长度',
         placeholder: '模型默认',
         add: '添加',
+        addLabel: '添加模型',
         addPlaceholder: '选择或输入模型',
         remove: '移除',
         clear: '恢复默认',
         save: '保存',
-        discard: '撤销',
+        discard: '放弃修改',
         saving: '保存中…',
         unsaved: '未保存',
-        readOnly: '这里当前只能查看,不能修改。',
-        sourceUser: '已修改',
+        readOnly: '本部署的设置为只读。',
+        sourceUser: '已覆盖',
         sourceBase: '来自配置文件',
         sourceNone: '模型默认',
         baseHint: '这个值写在本机的配置文件里。可以在这里调,但要回到模型默认值得去改那个文件。',
-        invalid: '请填一个整数,比如 1000000;也可以写成 1m 或 272k。',
+        invalid: '请填整数;留空表示使用模型默认值。也可以写成 1m 或 272k。',
         conflict: '这项设置刚在别处被改过,已经重新读取。请确认后再保存。',
         offline: '没保存成功,连接中断了。请稍后重试。',
         derived: '{value} tokens · 约 {trigger} 时开始压缩较早的对话',
@@ -71,24 +76,25 @@
       en: {
         title: 'OpenAI Codex',
         description: 'Adjust each model’s context length.',
-        expand: 'Expand',
-        collapse: 'Collapse',
+        expand: 'Show settings',
+        collapse: 'Hide settings',
         window: 'Context length',
         placeholder: 'model default',
         add: 'Add',
+        addLabel: 'Add a model',
         addPlaceholder: 'pick or type a model',
         remove: 'Remove',
         clear: 'Reset to default',
         save: 'Save',
-        discard: 'Undo',
+        discard: 'Discard',
         saving: 'Saving…',
-        unsaved: 'unsaved',
-        readOnly: 'This page is read-only right now.',
-        sourceUser: 'changed',
+        unsaved: 'Unsaved',
+        readOnly: 'This deployment stores settings read-only.',
+        sourceUser: 'Overridden',
         sourceBase: 'from a config file',
         sourceNone: 'model default',
         baseHint: 'This value is set in a config file on this machine. You can change it here, but getting back to the model default means editing that file.',
-        invalid: 'Enter a whole number, such as 1000000. You can also write 1m or 272k.',
+        invalid: 'Enter a whole number, or leave blank to use the model default. 1m and 272k are accepted.',
         conflict: 'Someone just changed this setting elsewhere, so it has been reloaded. Check it and save again.',
         offline: 'Not saved — the connection dropped. Please try again.',
         derived: '{value} tokens · compacts earlier turns around {trigger}',
@@ -459,133 +465,204 @@
      */
     function CodexCard(props) {
       var state = props.useCodexCard(function (snapshot) { return snapshot })
-      var open = React.useState(false)
-      var isOpen = open[0]
-      var setOpen = open[1]
+      var disclosure = React.useState(false)
+      var isOpen = disclosure[0]
+      var setOpen = disclosure[1]
+      var pending = React.useState('')
+      var pendingModel = pending[0]
+      var setPendingModel = pending[1]
       // A namespace this deployment does not serve, or a section the Host
       // could not prove secret-free, has nothing to edit. Rendering a dead
       // card would be worse than rendering none.
       if (!state.available) return null
       var text = TEXT[state.language]
       var h = React.createElement
+      var busy = !state.writable || state.saving
 
-      var badge = function (row) {
-        return row.source === 'user' ? text.sourceUser : row.source === 'base' ? text.sourceBase : text.sourceNone
-      }
-
-      var rows = state.rows.map(function (row) {
-        var hints = hintsOf(row, state.language)
-        return h('div', { key: row.model, style: STYLE.row },
-          h('code', { style: STYLE.model }, row.model),
-          h('input', {
-            style: row.invalid ? STYLE.inputInvalid : STYLE.input,
-            value: row.text,
-            inputMode: 'numeric',
-            spellCheck: false,
-            'aria-label': text.window + ' — ' + row.model,
-            'aria-invalid': row.invalid ? true : undefined,
-            placeholder: text.placeholder,
-            disabled: !state.writable || state.saving,
-            onChange: function (event) { props.edit(row.model, event.target.value) },
-          }),
-          h('span', { style: STYLE.badge }, badge(row)),
-          h('button', {
+      var fields = state.rows.map(function (row) {
+        var fieldId = 'dcl-window-' + row.model
+        // A row says where its value came from the way the shipped fields do:
+        // a solid badge for one this card wrote, a muted one for a value that
+        // arrived from elsewhere, and nothing at all for an untouched default.
+        var marks = []
+        if (row.source === 'user') {
+          marks.push(h('span', { key: 'badge', className: 'dcl-badge' }, text.sourceUser))
+        } else if (row.source === 'base') {
+          marks.push(h('span', { key: 'badge', className: 'dcl-badgeMuted' }, text.sourceBase))
+        }
+        if (row.action !== 'locked') {
+          marks.push(h('button', {
+            key: 'action',
             type: 'button',
-            style: STYLE.link,
-            disabled: !state.writable || state.saving || row.action === 'locked',
-            title: row.action === 'locked' ? text.baseHint : undefined,
+            className: 'dcl-reset',
+            disabled: busy,
             onClick: function () {
               if (row.action === 'remove') props.removeRow(row.model)
-              else if (row.action === 'reset') props.resetRow(row.model)
+              else props.resetRow(row.model)
             },
-          }, row.action === 'remove' ? text.remove : text.clear),
-          hints.map(function (line, index) {
-            return h('p', { key: index, style: line.error ? STYLE.hintError : STYLE.hint }, line.text)
+          }, row.action === 'remove' ? text.remove : text.clear))
+        }
+        return h('div', { key: row.model, className: 'dcl-field' },
+          h('div', { className: 'dcl-head' },
+            h('label', { className: 'dcl-label', htmlFor: fieldId }, row.model),
+            marks.length === 0 ? null : h('span', { className: 'dcl-badges' }, marks)),
+          h('input', {
+            id: fieldId,
+            className: row.invalid ? 'dcl-input dcl-inputInvalid' : 'dcl-input',
+            type: 'text',
+            inputMode: 'numeric',
+            spellCheck: false,
+            value: row.text,
+            placeholder: text.placeholder,
+            disabled: busy,
+            'aria-invalid': row.invalid ? true : undefined,
+            onChange: function (event) { props.edit(row.model, event.target.value) },
           }),
-        )
+          hintsOf(row, state.language).map(function (line, index) {
+            return h('p', { key: index, className: line.error ? 'dcl-invalid' : 'dcl-hint' }, line.text)
+          }))
       })
 
-      var addModel = React.useState('')
-      var pending = addModel[0]
-      var setPending = addModel[1]
-      var addRow = h('div', { style: STYLE.row },
-        h('input', {
-          style: STYLE.input,
-          value: pending,
-          spellCheck: false,
-          list: 'dsh-codex-lite-models',
-          'aria-label': text.addPlaceholder,
-          placeholder: text.addPlaceholder,
-          disabled: !state.writable || state.saving,
-          onChange: function (event) { setPending(event.target.value) },
-        }),
-        h('datalist', { id: 'dsh-codex-lite-models' },
-          state.addable.map(function (id) { return h('option', { key: id, value: id }) })),
-        h('button', {
-          type: 'button',
-          style: STYLE.link,
-          disabled: !state.writable || state.saving || pending.trim() === '',
-          onClick: function () { props.addRow(pending); setPending('') },
-        }, text.add),
-      )
+      var addField = h('div', { className: 'dcl-field' },
+        h('div', { className: 'dcl-head' },
+          h('label', { className: 'dcl-label', htmlFor: 'dcl-add' }, text.addLabel)),
+        h('div', { className: 'dcl-add' },
+          h('input', {
+            id: 'dcl-add',
+            className: 'dcl-input',
+            type: 'text',
+            list: 'dcl-models',
+            spellCheck: false,
+            value: pendingModel,
+            placeholder: text.addPlaceholder,
+            disabled: busy,
+            onChange: function (event) { setPendingModel(event.target.value) },
+          }),
+          h('button', {
+            type: 'button',
+            className: 'dcl-discard',
+            disabled: busy || pendingModel.trim() === '',
+            onClick: function () { props.addRow(pendingModel); setPendingModel('') },
+          }, text.add)),
+        h('datalist', { id: 'dcl-models' },
+          state.addable.map(function (id) { return h('option', { key: id, value: id }) })))
 
-      return h('li', { style: STYLE.card },
+      return h('li', { className: isOpen ? 'dcl-card dcl-cardOpen' : 'dcl-card' },
         h('button', {
           type: 'button',
-          style: STYLE.header,
+          className: 'dcl-header',
           'aria-expanded': isOpen,
           'aria-label': (isOpen ? text.collapse : text.expand) + ': ' + text.title,
           onClick: function () { setOpen(!isOpen) },
         },
-        h('span', { style: STYLE.headText },
-          h('span', { style: STYLE.name }, text.title),
-          h('span', { style: STYLE.description }, text.description)),
-        h('span', { style: STYLE.tail }, state.dirty ? text.unsaved : '', ' ', isOpen ? '▴' : '▾')),
-        isOpen ? h('div', { style: STYLE.body },
-          state.writable ? null : h('p', { style: STYLE.notice, role: 'status' }, text.readOnly),
-          rows,
-          addRow,
-          h('p', { style: STYLE.note }, text.note),
-          state.failure === undefined ? null : h('p', { style: STYLE.failure, role: 'status' }, state.failure),
-          h('div', { style: STYLE.footer },
-            h('button', {
-              type: 'button',
-              style: STYLE.link,
-              disabled: !state.dirty || state.saving,
-              onClick: function () { props.discard() },
-            }, text.discard),
-            h('button', {
-              type: 'button',
-              style: STYLE.primary,
-              disabled: !state.writable || !state.dirty || state.invalid || state.saving,
-              onClick: function () { void props.save() },
-            }, state.saving ? text.saving : text.save)),
-        ) : null)
+        h('span', { className: 'dcl-headText' },
+          h('span', { className: 'dcl-name' }, text.title),
+          h('span', { className: 'dcl-description' }, text.description)),
+        state.dirty ? h('span', { className: 'dcl-pending' }, text.unsaved) : null,
+        chevron(React, isOpen)),
+        isOpen
+          ? h('div', { className: 'dcl-body' },
+            state.writable ? null : h('p', { className: 'dcl-readOnly', role: 'status' }, text.readOnly),
+            fields,
+            addField,
+            h('p', { className: 'dcl-note' }, text.note),
+            h('div', { className: 'dcl-footer' },
+              state.failure === undefined
+                ? null
+                : h('p', { className: 'dcl-failed', role: 'status' }, state.failure),
+              h('button', {
+                type: 'button',
+                className: 'dcl-discard',
+                disabled: !state.dirty || state.saving,
+                onClick: function () { props.discard() },
+              }, text.discard),
+              h('button', {
+                type: 'button',
+                className: 'dcl-save',
+                disabled: !state.writable || !state.dirty || state.invalid || state.saving,
+                onClick: function () { void props.save() },
+              }, state.saving ? text.saving : text.save)))
+          : null)
     }
 
-    // Inline styles over the shell's own palette tokens, so the card follows
-    // both themes without a stylesheet the module table would have to serve.
-    var STYLE = {
-      card: { listStyle: 'none', border: '1px solid var(--dsw-alias-border-l2, #d0d0d0)', borderRadius: '8px', overflow: 'hidden' },
-      header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', width: '100%', padding: '12px 14px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', font: 'inherit', color: 'inherit' },
-      headText: { display: 'flex', flexDirection: 'column', gap: '2px' },
-      name: { fontWeight: 600 },
-      description: { fontSize: '0.85em', color: 'var(--dsw-alias-label-tertiary, #767676)' },
-      tail: { fontSize: '0.85em', color: 'var(--dsw-alias-label-tertiary, #767676)', whiteSpace: 'nowrap' },
-      body: { display: 'flex', flexDirection: 'column', gap: '10px', padding: '0 14px 14px' },
-      row: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' },
-      model: { minWidth: '11em', fontSize: '0.9em' },
-      input: { width: '10em', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2, #d0d0d0)', background: 'transparent', color: 'inherit', font: 'inherit' },
-      inputInvalid: { width: '10em', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-label-error, #d24343)', background: 'transparent', color: 'inherit', font: 'inherit' },
-      badge: { fontSize: '0.78em', color: 'var(--dsw-alias-label-tertiary, #767676)' },
-      link: { background: 'none', border: 'none', padding: '4px 6px', cursor: 'pointer', font: 'inherit', fontSize: '0.85em', color: 'var(--dsw-alias-label-secondary, #555)' },
-      primary: { padding: '5px 14px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2, #d0d0d0)', cursor: 'pointer', font: 'inherit', fontSize: '0.9em' },
-      hint: { flexBasis: '100%', margin: 0, fontSize: '0.78em', color: 'var(--dsw-alias-label-tertiary, #767676)' },
-      hintError: { flexBasis: '100%', margin: 0, fontSize: '0.78em', color: 'var(--dsw-alias-label-error, #d24343)' },
-      note: { margin: 0, fontSize: '0.78em', lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary, #767676)' },
-      notice: { margin: 0, fontSize: '0.85em', color: 'var(--dsw-alias-label-secondary, #555)' },
-      failure: { margin: 0, fontSize: '0.85em', color: 'var(--dsw-alias-label-error, #d24343)' },
-      footer: { display: 'flex', justifyContent: 'flex-end', gap: '8px' },
+    // The shipped cards are CSS modules, which this shell injects as <style>
+    // tags at runtime — so a stylesheet is the native mechanism here, not a
+    // workaround, and it is what buys hover, focus and disabled states that
+    // inline styles cannot express. These rules mirror the shipped
+    // PluginCard/fields modules so this card is the same object as its
+    // neighbours rather than an approximation of one.
+    var STYLE_TAG_ID = 'dsh-codex-lite/card.css'
+    var CSS = [
+      '.dcl-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;',
+      'background:var(--dsw-alias-bg-layer-3);transition:border-color .16s,background .16s}',
+      '.dcl-card:hover{border-color:var(--dsw-alias-label-dimmed)}',
+      '.dcl-cardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
+      '.dcl-header{width:100%;appearance:none;border:0;background:none;font:inherit;color:inherit;',
+      'text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:12px}',
+      '.dcl-header:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
+      '.dcl-headText{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}',
+      '.dcl-name{font-size:15px;font-weight:600;line-height:1.4;color:var(--dsw-alias-label-primary)}',
+      '.dcl-description{font-size:13px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
+      '.dcl-chevronOpen{transform:rotate(180deg)}',
+      '.dcl-pending{flex:none;border-radius:999px;padding:1px 8px;font-size:11px;line-height:17px;font-weight:500;',
+      'white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}',
+      '.dcl-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}',
+      '.dcl-readOnly{margin:12px 0 0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-field{display:flex;flex-direction:column;gap:6px;padding:12px 0}',
+      '.dcl-field+.dcl-field{border-top:1px solid var(--dsw-alias-border-l2)}',
+      '.dcl-head{display:flex;align-items:center;gap:8px}',
+      '.dcl-label{flex:1;min-width:0;font-size:13px;font-weight:500;line-height:1.5;color:var(--dsw-alias-label-primary)}',
+      '.dcl-badges{display:inline-flex;align-items:center;gap:8px}',
+      '.dcl-badge{border-radius:999px;padding:1px 8px;font-size:11px;line-height:17px;white-space:nowrap;',
+      'font-weight:500;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}',
+      '.dcl-badgeMuted{border-radius:999px;padding:1px 8px;font-size:11px;line-height:17px;white-space:nowrap;',
+      'color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-reset{border:none;background:none;padding:0;font:inherit;font-size:12px;line-height:1.5;',
+      'color:var(--dsw-alias-label-secondary);cursor:pointer}',
+      '.dcl-reset:hover:not(:disabled){color:var(--dsw-alias-label-primary)}',
+      '.dcl-reset:disabled{cursor:default;opacity:.4}',
+      '.dcl-input{height:34px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;',
+      'background:var(--dsw-alias-bg-layer-3);font:inherit;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-primary)}',
+      '.dcl-input:focus-visible{outline:none;border-color:var(--dsw-alias-brand-primary)}',
+      '.dcl-input:disabled{color:var(--dsw-alias-label-tertiary);cursor:default}',
+      '.dcl-inputInvalid{border-color:var(--dsw-alias-label-error)}',
+      '.dcl-invalid{margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-error)}',
+      '.dcl-hint{margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-note{margin:12px 0 0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-add{display:flex;align-items:center;gap:8px}',
+      '.dcl-add .dcl-input{flex:1;min-width:0}',
+      '.dcl-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 0 4px;',
+      'border-top:1px solid var(--dsw-alias-border-l2)}',
+      '.dcl-failed{flex:1;min-width:0;margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-error)}',
+      '.dcl-discard,.dcl-save{appearance:none;border:1px solid transparent;border-radius:8px;padding:5px 14px;',
+      'font:inherit;font-size:13px;line-height:1.5;cursor:pointer}',
+      '.dcl-discard{border-color:var(--dsw-alias-border-l2);background:none;color:var(--dsw-alias-label-secondary)}',
+      '.dcl-discard:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}',
+      '.dcl-save{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}',
+      '.dcl-discard:disabled,.dcl-save:disabled{opacity:.4;cursor:default}',
+      '.dcl-discard:focus-visible,.dcl-save:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+    ].join('')
+
+    /** Put the card's rules in the document once, the way a built bundle does. */
+    function ensureStyles() {
+      if (typeof document === 'undefined' || document.getElementById(STYLE_TAG_ID) !== null) return
+      var tag = document.createElement('style')
+      tag.id = STYLE_TAG_ID
+      tag.dataset.plugin = 'dsh-codex-lite'
+      tag.textContent = CSS
+      document.head.appendChild(tag)
+    }
+
+    /** The disclosure chevron the shipped cards use, drawn rather than imported. */
+    function chevron(React, open) {
+      return React.createElement('svg', {
+        className: 'dcl-chevron' + (open ? ' dcl-chevronOpen' : ''),
+        width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true,
+      }, React.createElement('path', {
+        d: 'M3.5 5.25 7 8.75l3.5-3.5',
+        stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round',
+      }))
     }
 
     /**
@@ -593,6 +670,7 @@
      * @param {object} ctx - the scoped browser context.
      */
     function mount(ctx) {
+      ensureStyles()
       var connection = ctx.get('connection')
       var scope = ctx.settingsScope.bind({ namespace: SETTINGS_NS, decode: decodeSection })
       var controller = new Controller(scope, connection.api, localeOf(ctx))
