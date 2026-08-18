@@ -38,70 +38,59 @@
     /** The compaction trigger ratio the shipped agent presets leave at its default. */
     var THRESHOLD_RATIO = 0.8
 
+    // Copy for someone who just wants a longer conversation. It names nothing
+    // they have not been shown: no file they were not told to open, and none
+    // of the harness vocabulary this plugin is built on.
     var TEXT = {
       zh: {
         title: 'OpenAI Codex',
-        description: '按模型覆盖上下文窗口',
+        description: '设置每个模型能记住多少内容。',
         expand: '展开',
         collapse: '收起',
-        model: '模型',
-        window: '上下文窗口',
-        placeholder: '继承 catalog',
-        add: '添加模型',
-        addPlaceholder: '模型 id',
-        clear: '清除',
+        window: '上下文长度',
+        placeholder: '默认',
+        add: '添加',
+        addPlaceholder: '选择或输入模型',
+        clear: '恢复默认',
         save: '保存',
-        discard: '放弃',
+        discard: '撤销',
         saving: '保存中…',
         unsaved: '未保存',
-        readOnly: '此部署的配置面只读,无法在这里保存。',
-        sourceUser: '用户层',
-        sourceBase: '配置层',
-        sourceNone: '未设置',
-        baseHint: '来自 cordis.patch.yml:可以在这里覆盖,但要删除得改那个文件——用户层是合并上去的,没法删掉下层的键。',
-        invalid: '要一个正整数,可写 1m / 272k。',
-        conflict: '配置已被其他地方改动,已重新读取,请确认后再保存。',
-        offline: '写入没有送达主机,请检查连接后重试。',
-        trigger: '压缩触发点约',
-        tokens: 'tokens',
-        compaction: '压缩触发点 ≈ 上下文窗口 × ' + THRESHOLD_RATIO
-          + '(shipped agent preset 里 compaction-basic 的默认比例)。这个比例不属于本插件,'
-          + '也改不到:Web 表面把 compaction-basic 放进了 agent preset 的隔离 realm。要调它,'
-          + '把一份 shipped preset 复制到 $DSH_HOME/.agent-presets 后手工编辑。',
-        local: '这个数字是本地记账,不发送给服务端:它决定上下文计量表的分母和压缩触发点。',
+        readOnly: '这里当前只能查看,不能修改。',
+        sourceUser: '已修改',
+        sourceBase: '来自配置文件',
+        sourceNone: '默认',
+        baseHint: '这个值写在本机的配置文件里。可以在这里调大调小,但要恢复默认得去改那个文件。',
+        invalid: '请填一个整数,比如 1000000;也可以写成 1m 或 272k。',
+        conflict: '这项设置刚在别处被改过,已经重新读取。请确认后再保存。',
+        offline: '没保存成功,连接中断了。请稍后重试。',
+        derived: '{value} tokens · 约 {trigger} 时开始自动整理较早的内容',
+        note: '调大只是让会话多保留一些历史。模型和服务端的真实上限不会变,而且超出模型原本长度的部分会按更贵的价格计费。',
       },
       en: {
         title: 'OpenAI Codex',
-        description: 'Per-model context window',
+        description: 'How much each model can hold at once.',
         expand: 'Expand',
         collapse: 'Collapse',
-        model: 'Model',
-        window: 'Context window',
-        placeholder: 'inherit catalog',
-        add: 'Add model',
-        addPlaceholder: 'model id',
-        clear: 'Clear',
+        window: 'Context length',
+        placeholder: 'default',
+        add: 'Add',
+        addPlaceholder: 'pick or type a model',
+        clear: 'Reset to default',
         save: 'Save',
-        discard: 'Discard',
+        discard: 'Undo',
         saving: 'Saving…',
         unsaved: 'unsaved',
-        readOnly: 'This deployment serves the configuration plane read-only.',
-        sourceUser: 'user layer',
-        sourceBase: 'composition',
-        sourceNone: 'unset',
-        baseHint: 'From cordis.patch.yml: it can be overridden here, but deleting it means editing that file — the user layer merges over the one below and cannot remove its keys.',
-        invalid: 'Expected a positive integer; 1m and 272k are accepted.',
-        conflict: 'The document changed elsewhere. It has been re-read — review and save again.',
-        offline: 'The write never reached the host. Check the connection and retry.',
-        trigger: 'compaction at ≈',
-        tokens: 'tokens',
-        compaction: 'Compaction fires at ≈ context window × ' + THRESHOLD_RATIO
-          + ', the default ratio of compaction-basic in the shipped agent presets. That ratio is'
-          + ' not this plugin’s and cannot be reached from it: the web surface mounts'
-          + ' compaction-basic inside the preset’s isolated realm. To change it, copy a shipped'
-          + ' preset into $DSH_HOME/.agent-presets and edit it by hand.',
-        local: 'This number is local bookkeeping and never reaches the server: it sizes the context'
-          + ' meter and the compaction trigger.',
+        readOnly: 'This page is read-only right now.',
+        sourceUser: 'changed',
+        sourceBase: 'from a config file',
+        sourceNone: 'default',
+        baseHint: 'This value is set in a config file on this machine. You can raise or lower it here, but resetting it to the default means editing that file.',
+        invalid: 'Enter a whole number, such as 1000000. You can also write 1m or 272k.',
+        conflict: 'Someone just changed this setting elsewhere, so it has been reloaded. Check it and save again.',
+        offline: 'Not saved — the connection dropped. Please try again.',
+        derived: '{value} tokens · starts summarizing earlier turns around {trigger}',
+        note: 'Raising this only lets a conversation keep more history. It does not change the real limits of the model or the service, and anything past the model’s original length is billed at a higher rate.',
       },
     }
 
@@ -210,8 +199,9 @@
         lines.push({ text: text.invalid, error: true })
       } else if (row.value !== undefined) {
         lines.push({
-          text: groupDigits(row.value) + ' ' + text.tokens + ' · ' + text.trigger + ' '
-            + groupDigits(Math.floor(row.value * THRESHOLD_RATIO)),
+          text: text.derived
+            .replace('{value}', groupDigits(row.value))
+            .replace('{trigger}', groupDigits(Math.floor(row.value * THRESHOLD_RATIO))),
         })
       }
       if (row.source === 'base') lines.push({ text: text.baseHint })
@@ -539,8 +529,7 @@
           state.writable ? null : h('p', { style: STYLE.notice, role: 'status' }, text.readOnly),
           rows,
           addRow,
-          h('p', { style: STYLE.note }, text.local),
-          h('p', { style: STYLE.note }, text.compaction),
+          h('p', { style: STYLE.note }, text.note),
           state.failure === undefined ? null : h('p', { style: STYLE.failure, role: 'status' }, state.failure),
           h('div', { style: STYLE.footer },
             h('button', {

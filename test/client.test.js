@@ -252,14 +252,14 @@ describe('hintsOf', () => {
     const lines = hintsOf({ source: 'base', value: 1_000_000, invalid: false }, 'zh')
     assert.equal(lines.length, 2, 'the derived numbers, then the reason Clear is disabled')
     assert.match(lines[0].text, /1,000,000/u)
-    assert.match(lines[1].text, /cordis\.patch\.yml/u)
+    assert.match(lines[1].text, /配置文件/u, 'it must say where the value comes from, without naming internals')
   })
 
   test('says nothing extra for a row the user layer owns', () => {
     const { hintsOf } = materialize().exports
     const lines = hintsOf({ source: 'user', value: 900_000, invalid: false }, 'zh')
     assert.equal(lines.length, 1)
-    assert.doesNotMatch(lines[0].text, /cordis\.patch\.yml/u)
+    assert.doesNotMatch(lines[0].text, /配置文件/u)
   })
 
   test('an invalid draft replaces the numbers with the reason', () => {
@@ -274,12 +274,12 @@ describe('hintsOf', () => {
     const lines = hintsOf({ source: 'base', value: undefined, invalid: true }, 'zh')
     assert.equal(lines.length, 2)
     assert.equal(lines[0].error, true)
-    assert.match(lines[1].text, /cordis\.patch\.yml/u)
+    assert.match(lines[1].text, /配置文件/u)
   })
 
   test('answers in English too, and falls back for an unknown language', () => {
     const { hintsOf } = materialize().exports
-    assert.match(hintsOf({ source: 'base', value: 1000, invalid: false }, 'en')[1].text, /cordis\.patch\.yml/u)
+    assert.match(hintsOf({ source: 'base', value: 1000, invalid: false }, 'en')[1].text, /config file/u)
     assert.equal(hintsOf({ source: 'base', value: 1000, invalid: false }, 'kl').length, 2)
   })
 })
@@ -365,15 +365,15 @@ describe('save', () => {
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
     const { failure } = face.hooks.codexCard.getSnapshot()
-    assert.notEqual(failure, 'revision 7 is stale')
-    assert.match(failure, /改动|changed/u)
+    assert.notEqual(failure, 'revision 7 is stale', 'the wire wording is not for the reader')
+    assert.match(failure, /改过|changed/u)
   })
 
   test('reports a write that never reached the host', async () => {
     const face = saving(() => Promise.reject(new Error('offline')))
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
-    assert.match(face.hooks.codexCard.getSnapshot().failure, /主机|host/u)
+    assert.match(face.hooks.codexCard.getSnapshot().failure, /连接|connection/u)
   })
 
   test('refuses to send an invalid draft', async () => {
@@ -382,7 +382,7 @@ describe('save', () => {
     face.edit('gpt-5.6-sol', 'nonsense')
     await face.save()
     assert.equal(calls, 0)
-    assert.match(face.hooks.codexCard.getSnapshot().failure, /正整数|positive integer/u)
+    assert.match(face.hooks.codexCard.getSnapshot().failure, /整数|whole number/u)
   })
 
   test('sends nothing when the drafts add up to no change', async () => {
@@ -394,4 +394,25 @@ describe('save', () => {
     assert.equal(calls, 0)
     assert.equal(face.hooks.codexCard.getSnapshot().dirty, false)
   })
+})
+
+describe('card copy', () => {
+  test('never shows the reader a name only this codebase knows', () => {
+    const { exports } = materialize()
+    // Every string the card can render, reachable through its two text-bearing
+    // exports plus the module source's own literals.
+    const rows = [
+      ...hintLines({ source: 'base', value: 1000, invalid: false }, exports),
+      ...hintLines({ source: 'base', value: undefined, invalid: true }, exports),
+      ...hintLines({ source: 'user', value: 1000, invalid: false }, exports),
+    ]
+    const forbidden = /cordis|patch\.yml|settings\.yaml|realm|preset 的隔离|compaction-basic|seam|namespace|用户层|配置层|schema/iu
+    for (const line of rows) {
+      assert.doesNotMatch(line, forbidden, `card copy leaks an internal name: ${line}`)
+    }
+  })
+
+  function hintLines(row, exports) {
+    return ['zh', 'en'].flatMap(language => exports.hintsOf(row, language).map(line => line.text))
+  }
 })

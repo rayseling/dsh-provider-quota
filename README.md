@@ -16,7 +16,7 @@
 ## 安装
 
 ```sh
-dsh plugin --profile web add file:/Volumes/4Macmini/Code/dsh-codex-lite
+dsh plugin --profile web add file:/你克隆到的路径/dsh-codex-lite
 ```
 
 ## 登录
@@ -30,52 +30,46 @@ dsh plugin --profile web exec dsh-codex-lite logout
 
 凭据存放在 `$DSH_HOME/.openai-codex-auth.json`(0600,属主之外可读即拒绝;与 `~/.codex` 互不相干)。与 dsh-codex 同路径同格式,两个插件登录状态互通。
 
-**权限拒绝只在 POSIX 上成立。** Windows 报告的 mode 是从只读属性合成的,与文件真正的 ACL 无关,所以那里没有等价检查——凭据靠所在目录的 ACL 保护,和 `$DSH_HOME` 下其他 harness 机密一样。
+这个检查只在 macOS / Linux 上有效。Windows 报告的权限位是系统合成的,反映不了文件真正的访问控制,所以那里不做检查——凭据靠所在目录的权限保护,和 dsh 存的其他机密一样。
 
 ## 使用
 
 重启 `dsh web`,在会话里 `/model` 选 `openai-codex` 下的模型即可;默认模型保持你原有设置不变。未登录时请求会明确报错并提示登录命令。
 
-## 配置:`modelOverrides`
+## 配置:上下文长度
 
-pi-ai 的 catalog 给每个模型写死了尺寸,用的是 OpenAI 为 Codex 客户端调过的保守值——`gpt-5.6-sol` 是 `contextWindow: 272000`,而 OpenAI 文档标称 1,050,000(catalog 的 cost 里那个 `inputTokensAbove: 272000` 档位也印证模型本身支持更多)。`modelOverrides` 按模型 id 替换这个数字。
+pi-ai 的模型目录给每个模型写死了一个上下文长度,用的是 OpenAI 为 Codex 客户端调过的保守值——`gpt-5.6-sol` 是 272000,而 OpenAI 文档标称 1,050,000。这个插件让你改掉它。
 
-它有三层,后者覆盖前者(按模型 id 递归合并,不是整体替换):
+### 在界面里改(推荐)
 
-| 层 | 位置 | 谁改 |
-|---|---|---|
-| schema 默认 | 空 | — |
-| **组合层** | profile 的 `cordis.patch.yml` | 部署基线,随 profile 走 |
-| **用户层** | `$DSH_HOME/settings.yaml` 的 `llm-openai-codex-lite:` 段 | Settings UI,或手编该文件 |
+**设置 → 插件 → 插件配置 → OpenAI Codex**,按模型填数字,`1m` / `272k` / `1000000` 都认。保存立刻生效,**不用重启**:下一条消息就按新值走,正在进行的会话也一样。想回到模型自带的值,点「恢复默认」。
 
-### Settings UI(推荐)
+填了目录里没有的模型名会被**当场拒绝**,并列出所有可选的名字——不会出现"存进去了却没生效"。
 
-**设置 → 插件 → 插件配置 → OpenAI Codex**。按模型填上下文窗口,`1m` / `272k` / `1_000_000` 都认,保存即写入 `settings.yaml`——**不用重启**:下一个请求的上下文计量表分母和压缩触发点立刻按新值走,进行中的会话也一样(压缩后端每次预检都重新读模型信息)。
+从别的机器访问(不是 127.0.0.1)时要看到这张卡片,profile 的 `connection` 需要配 `privilegedAuthority: trusted-hosts`;否则设置面只对本机开放。
 
-几个刻意的行为:
+### 这个数字意味着什么
 
-- 来自 `cordis.patch.yml` 的行标为**配置层**,只能覆盖、不能在这里删除:用户层是合并上去的,删掉用户层的值会回落到 patch 的值,而不是回落到 catalog。
+它只影响本机:决定一次会话在自动压缩历史之前能留多少内容,以及输入框上方那个进度环的总量。**它不会改变模型或服务端的真实上限。** 超出模型原本长度(272000)的那部分输入按更贵的档计费,订阅下体现为额度消耗更快。
 
-  **所以别把日常想调的值写进 `cordis.patch.yml`。** 只写在 `settings.yaml`(即 UI 里)的模型,清除后干净地回到 catalog 默认;写进 patch 的则成了操作员在 UI 里撤不掉的地板。patch 层留给"这台部署开箱就该是这个数"的场景。
-- 写了 catalog 里不存在的模型 id,会被**拒绝写入**(而不是写进去再失效),卡片直接显示 seam 返回的原文,里面列出了全部已知 id。
-- 卡片只在部署确实提供了这个配置段时出现;远程浏览器(非回环)还需要 profile 的 `connection` 配了 `privilegedAuthority: trusted-hosts`,否则配置面只对回环开放。
+可配的只有上下文长度。输出上限没有——Codex 的请求里根本不带这个字段,提供了也只是摆设。
 
-### settings.yaml
+### 写在文件里(可选)
+
+界面改的值落在 `$DSH_HOME/settings.yaml`:
 
 ```yaml
-# $DSH_HOME/settings.yaml
 llm-openai-codex-lite:
   modelOverrides:
     gpt-5.6-sol:
       contextWindow: 1000000
 ```
 
-手改这个文件会被热加载,卡片跟着刷新;写坏了会保留上一版好值并打 warning,不会让路由停摆。
+手改这个文件会被热加载,界面跟着刷新;写坏了会保留上一版好值并告警,不会让模型变得不可用。
 
-### cordis.patch.yml(部署基线)
+也可以写进 profile 的 `cordis.patch.yml`,当作**这台机器的出厂值**:
 
 ```yaml
-# $DSH_HOME/profiles/<profile>/cordis.patch.yml
 - id: llm-openai-codex-lite
   config:
     modelOverrides:
@@ -83,25 +77,13 @@ llm-openai-codex-lite:
         contextWindow: 1000000
 ```
 
-这等价于 Codex CLI 的 `model_context_window`(`~/.codex/config.toml` 对 dsh 无效,本插件不读 `~/.codex`)。唯一的字段是 `contextWindow`,省略即继承 catalog;这一层写了不存在的模型 id 会在**加载时**报错,而不是静默失效。
+代价是它在界面里**撤不掉**:界面只能盖住它,「恢复默认」会回到这个值,而不是模型自带的值。所以日常想调的数字别写这儿——这一层留给"新机器装上就该是这个数"的场景。(写错模型名会在启动时报错。)
 
-这一层是可选的:不写它,一切都从 UI 管,清除即回 catalog 默认。
+### 什么时候开始自动压缩
 
-没有输出上限字段:Codex 的 Responses 请求体里根本不带 `max_output_tokens`,所以一个 `maxTokens` 既到不了服务端,也不会出现在会话面上的模型信息里——与其提供一个静默无效的旋钮,不如不提供。
+会话装到大约 **上下文长度 × 0.8** 时,较早的内容会被压缩成摘要。这个比例不属于本插件,界面里也不提供,它由 Agent 预设决定。
 
-**这是本地记账,数字不发给服务端。** 它决定两件事:上下文计量表的总量,以及会话在压缩前能留多少历史。超过 272000 tokens 的输入按模型更贵的计费档走(订阅下体现为额度消耗)。
-
-### 自动压缩点
-
-dsh 用比例而不是绝对值,所以没有与 Codex 的 `model_auto_compact_token_limit` 一一对应的字段——阈值是算出来的:
-
-```
-触发压缩的 token 数 = contextWindow × thresholdRatio
-```
-
-`thresholdRatio` 默认 `0.8`,所以上面这份配置把触发点从 217,600 抬到 **800,000**(Codex 那边建议手写的是 900,000,即更激进的 0.9)。
-
-要精确对齐 0.9 得改压缩后端的配置,而它**不在** profile 的 patch 层:Web 表面把 `compaction-basic` 移到了 agent preset 的隔离 realm 里。复制一份 shipped preset 到 `$DSH_HOME/.agent-presets`(shipped 的那份只读),把它的 `compaction-basic` 行改成:
+要改的话:把一份自带预设复制到 `$DSH_HOME/.agent-presets`(自带的那份是只读的),编辑其中 `compaction-basic` 那一行:
 
 ```yaml
 - id: compaction-basic
@@ -110,9 +92,7 @@ dsh 用比例而不是绝对值,所以没有与 Codex 的 `model_auto_compact_to
     thresholdRatio: 0.9
 ```
 
-`compaction-basic` 还支持 per-model 策略(带 `provider` + `model` 的条目),所以可以只给 sol 调而不动其他模型;`retainRatio` 默认 `0.16`,决定压缩后保留多少上下文。
-
-这个比例**不在本插件的可配置范围内**:Web 表面把 `compaction-basic` 放进了 agent preset 的隔离 realm,那棵子树不在 loader 条目里,profile 的 patch 按 id 寻址根本够不到,它也没有(在结构上也不能有)自己的 settings 段。Settings 卡片因此只把它当提示文字显示,不伪装成一个可调的旋钮。
+`compaction-basic` 支持按模型分别设置(条目里带 `provider` + `model`),所以可以只调 sol 而不动别的;`retainRatio` 默认 `0.16`,决定压缩之后留下多少。
 
 ## 卸载
 
