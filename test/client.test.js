@@ -41,7 +41,7 @@ function load() {
  * @param {Record<string, unknown>} [table] - the modules `require` may answer.
  * @returns {{exports: object, required: string[]}} the module and what it asked for.
  */
-function materialize(table = { react: {} }) {
+function materialize(table = { 'react': {}, '@deepseek-ai/dsh-client-ui-primitives': {} }) {
   const required = []
   const exports = load().factory((specifier) => {
     required.push(specifier)
@@ -94,8 +94,11 @@ describe('module table contract', () => {
     assert.doesNotMatch(source, /^\s*await\s/mu, 'top-level await is not available in a classic script')
   })
 
-  test('asks the module table for react and nothing else', () => {
-    assert.deepEqual(materialize().required, ['react'])
+  test('asks the module table only for platform modules the shell seeds', () => {
+    // The seed set is fixed (packages/client/web/src/seed.ts); a require
+    // outside it resolves only by luck and fails the page when the luck runs
+    // out, so the set this bundle depends on is pinned here.
+    assert.deepEqual(materialize().required, ['react', '@deepseek-ai/dsh-client-ui-primitives'])
   })
 
   test('exports a cordis plugin that declares no services', () => {

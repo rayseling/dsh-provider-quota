@@ -28,6 +28,11 @@
    */
   function factory(require) {
     var React = require('react')
+    // The same menu the Settings dialog's own selectors are built from, so
+    // this card's dropdown is that control rather than an imitation of it.
+    var primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+    var Menu = primitives.Menu
+    var ChevronIcon = primitives.IconChevronDownOutline14
 
     /** The settings namespace this card edits; must equal the host half's. */
     var SETTINGS_NS = 'llm-openai-codex-lite'
@@ -55,7 +60,8 @@
         placeholder: '模型默认',
         add: '添加',
         addLabel: '添加模型',
-        addPlaceholder: '选择或输入模型',
+        pick: '选择模型',
+        allAdded: '已全部添加',
         remove: '移除',
         clear: '恢复默认',
         save: '保存',
@@ -82,7 +88,8 @@
         placeholder: 'model default',
         add: 'Add',
         addLabel: 'Add a model',
-        addPlaceholder: 'pick or type a model',
+        pick: 'Choose a model',
+        allAdded: 'All added',
         remove: 'Remove',
         clear: 'Reset to default',
         save: 'Save',
@@ -468,9 +475,9 @@
       var disclosure = React.useState(false)
       var isOpen = disclosure[0]
       var setOpen = disclosure[1]
-      var pending = React.useState('')
-      var pendingModel = pending[0]
-      var setPendingModel = pending[1]
+      var picking = React.useState(false)
+      var isPicking = picking[0]
+      var setPicking = picking[1]
       // A namespace this deployment does not serve, or a section the Host
       // could not prove secret-free, has nothing to edit. Rendering a dead
       // card would be worse than rendering none.
@@ -523,29 +530,27 @@
           }))
       })
 
+      var addable = state.addable
       var addField = h('div', { className: 'dcl-field' },
         h('div', { className: 'dcl-head' },
-          h('label', { className: 'dcl-label', htmlFor: 'dcl-add' }, text.addLabel)),
-        h('div', { className: 'dcl-add' },
-          h('input', {
-            id: 'dcl-add',
-            className: 'dcl-input',
-            type: 'text',
-            list: 'dcl-models',
-            spellCheck: false,
-            value: pendingModel,
-            placeholder: text.addPlaceholder,
-            disabled: busy,
-            onChange: function (event) { setPendingModel(event.target.value) },
-          }),
-          h('button', {
-            type: 'button',
-            className: 'dcl-discard',
-            disabled: busy || pendingModel.trim() === '',
-            onClick: function () { props.addRow(pendingModel); setPendingModel('') },
-          }, text.add)),
-        h('datalist', { id: 'dcl-models' },
-          state.addable.map(function (id) { return h('option', { key: id, value: id }) })))
+          h('span', { className: 'dcl-label' }, text.addLabel),
+          h(Menu, {
+            open: isPicking,
+            onClose: function () { setPicking(false) },
+            items: addable.map(function (id) { return { id: id, label: id } }),
+            onSelect: function (id) { props.addRow(id); setPicking(false) },
+            align: 'end',
+            portal: true,
+            anchor: h('button', {
+              type: 'button',
+              className: 'dcl-selector',
+              'aria-haspopup': 'menu',
+              'aria-expanded': isPicking,
+              disabled: busy || addable.length === 0,
+              onClick: function () { setPicking(!isPicking) },
+            }, addable.length === 0 ? text.allAdded : text.pick,
+            h(ChevronIcon, { className: 'dcl-chevron' })),
+          })))
 
       return h('li', { className: isOpen ? 'dcl-card dcl-cardOpen' : 'dcl-card' },
         h('button', {
@@ -559,7 +564,7 @@
           h('span', { className: 'dcl-name' }, text.title),
           h('span', { className: 'dcl-description' }, text.description)),
         state.dirty ? h('span', { className: 'dcl-pending' }, text.unsaved) : null,
-        chevron(React, isOpen)),
+        React.createElement(ChevronIcon, { className: isOpen ? 'dcl-chevron dcl-chevronOpen' : 'dcl-chevron' })),
         isOpen
           ? h('div', { className: 'dcl-body' },
             state.writable ? null : h('p', { className: 'dcl-readOnly', role: 'status' }, text.readOnly),
@@ -630,8 +635,11 @@
       '.dcl-invalid{margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-error)}',
       '.dcl-hint{margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
       '.dcl-note{margin:12px 0 0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
-      '.dcl-add{display:flex;align-items:center;gap:8px}',
-      '.dcl-add .dcl-input{flex:1;min-width:0}',
+      '.dcl-selector{display:inline-flex;align-items:center;gap:12px;height:36px;padding:0 14px;border:none;',
+      'border-radius:18px;background:var(--dsw-alias-bg-module-platform);font:inherit;font-size:14px;',
+      'line-height:22px;color:var(--dsw-alias-label-primary);cursor:pointer}',
+      '.dcl-selector:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
+      '.dcl-selector:disabled{color:var(--dsw-alias-label-tertiary);cursor:default}',
       '.dcl-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 0 4px;',
       'border-top:1px solid var(--dsw-alias-border-l2)}',
       '.dcl-failed{flex:1;min-width:0;margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-error)}',
@@ -652,17 +660,6 @@
       tag.dataset.plugin = 'dsh-codex-lite'
       tag.textContent = CSS
       document.head.appendChild(tag)
-    }
-
-    /** The disclosure chevron the shipped cards use, drawn rather than imported. */
-    function chevron(React, open) {
-      return React.createElement('svg', {
-        className: 'dcl-chevron' + (open ? ' dcl-chevronOpen' : ''),
-        width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true,
-      }, React.createElement('path', {
-        d: 'M3.5 5.25 7 8.75l3.5-3.5',
-        stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round',
-      }))
     }
 
     /**
