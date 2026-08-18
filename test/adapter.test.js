@@ -199,6 +199,66 @@ describe('credential failures', { skip }, () => {
     assert.equal(await isLocked(home), false)
   })
 
+  test('leaves nothing unredacted attached for a renderer to walk into', async () => {
+    // The message is not the only thing a diagnostic renderer reads. Anything
+    // that walks a `cause` chain — `errorChain`, an unhandled-rejection trace,
+    // `util.inspect` in a log line — would print the original beside the
+    // redacted wrapper. The seam detaches adapter failures to `{message,
+    // code}` before publishing them, so this guards the object rather than any
+    // one wire, and fails if a cause is ever reattached.
+    const home = await homeWithCredential()
+    globalThis.fetch = async () => new Response(
+      JSON.stringify({ access_token: 'a', refresh_token: 'rt_MUST_NOT_APPEAR', expires_in: 'not-a-number' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+    const error = await resolveOnce(adapterOver(home))
+    assert.ok(error instanceof llmModule.LlmError)
+    assert.doesNotMatch(llmModule.errorChain(error), /rt_MUST_NOT_APPEAR/u)
+    assert.equal(error.cause, undefined, 'nothing unredacted is kept for a renderer to find')
+  })
+
+  test('a refresh that never reached the endpoint is transport, not authentication', async () => {
+    // pi-ai reports this as `OpenAI Codex token refresh error: <cause>`. Sent
+    // as AUTH it would end the turn unretried and tell the operator to sign in
+    // again, which fixes nothing about a dropped connection.
+    const home = await homeWithCredential()
+    globalThis.fetch = async () => { throw new TypeError('fetch failed') }
+    const error = await resolveOnce(adapterOver(home))
+    assert.ok(error instanceof llmModule.LlmError)
+    assert.equal(error.code, 'TRANSPORT')
+  })
+
+  test('a token endpoint answering 5xx is the endpoint failing, not the grant', async () => {
+    const home = await homeWithCredential()
+    globalThis.fetch = async () => new Response('upstream unavailable', { status: 503 })
+    const error = await resolveOnce(adapterOver(home))
+    assert.ok(error instanceof llmModule.LlmError)
+    assert.equal(error.code, 'SERVER')
+  })
+
+  test('a throttled token endpoint is a rate limit', async () => {
+    const home = await homeWithCredential()
+    globalThis.fetch = async () => new Response('slow down', { status: 429 })
+    const error = await resolveOnce(adapterOver(home))
+    assert.ok(error instanceof llmModule.LlmError)
+    assert.equal(error.code, 'RATE_LIMIT')
+  })
+
+  test('a refused grant is still authentication, and every retryable code is one the policy retries', async () => {
+    const home = await homeWithCredential()
+    globalThis.fetch = async () => new Response('{"error":"invalid_grant"}', { status: 403 })
+    const error = await resolveOnce(adapterOver(home))
+    assert.ok(error instanceof llmModule.LlmError)
+    assert.equal(error.code, 'AUTH', 'a 4xx below 429 says the grant itself is bad')
+    // The classifier is only useful if the seam agrees these codes are worth
+    // retrying; pin that rather than trusting the taxonomy stays put.
+    const policy = adapterOver(home).providerRetryPolicy('openai-codex')
+    for (const code of ['TIMEOUT', 'TRANSPORT', 'SERVER', 'RATE_LIMIT']) {
+      assert.ok(policy.retryableCodes.includes(code), `${code} must be retryable`)
+    }
+    assert.equal(policy.retryableCodes.includes('AUTH'), false)
+  })
+
   test('a stalled token endpoint fails as a retryable timeout and frees the lock', async () => {
     const home = await homeWithCredential()
     let calls = 0

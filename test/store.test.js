@@ -109,6 +109,16 @@ describe('OpenAICodexCredentialStore: refusals', { skip }, () => {
     await assert.rejects(store.readCurrent(), /does not hold an OAuth credential/u)
   })
 
+  test('rejects an expiry that is not a finite number', async () => {
+    // `JSON.parse('1e999')` is `Infinity`, and pi-ai refreshes only while
+    // `Date.now() < expires` — which `Infinity` never permits. Accepting such
+    // a document would mean never rotating the token and failing every
+    // request as unauthorized, with nothing on the way there saying why.
+    const { store, path } = await freshStore()
+    await writeFile(path, '{"version":1,"credential":{"type":"oauth","access":"a","refresh":"r","expires":1e999}}', { mode: 0o600 })
+    await assert.rejects(store.readCurrent(), /does not hold an OAuth credential/u)
+  })
+
   test('refuses a file readable beyond its owner', {
     skip: process.platform === 'win32' && 'mode bits do not express a Windows ACL',
   }, async () => {

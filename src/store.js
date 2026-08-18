@@ -87,12 +87,18 @@ function parseDocument(text, filename) {
     throw new Error(`dsh-codex-lite: ${filename} is not a version-${AUTH_FORMAT_VERSION} credential document`)
   }
   const credential = value.credential
+  // `expires` is checked for finiteness, not merely for being a number.
+  // `JSON.parse('1e999')` is `Infinity`, whose `typeof` is `number`, and pi-ai
+  // decides whether to refresh with `Date.now() < stored.expires` — which
+  // `Infinity` answers with "still fresh", permanently. Such a document never
+  // rotates its access token again and fails every request as unauthorized,
+  // silently, forever; refusing to load it says so once instead.
   if (
     typeof credential !== 'object' || credential === null
     || credential.type !== 'oauth'
     || typeof credential.access !== 'string'
     || typeof credential.refresh !== 'string'
-    || typeof credential.expires !== 'number'
+    || !Number.isFinite(credential.expires)
   ) {
     throw new Error(`dsh-codex-lite: ${filename} does not hold an OAuth credential`)
   }

@@ -11,7 +11,7 @@ import { realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { loginOpenAICodex, logoutOpenAICodex, openAICodexAuthStatus } from './auth.js'
-import { safeMessage } from './redact.js'
+import { redactSecrets, safeMessage } from './redact.js'
 import { openAICodexAuthPath } from './store.js'
 
 /**
@@ -77,7 +77,11 @@ function notify(event) {
       break
     }
     default:
-      if (typeof event.message === 'string') process.stdout.write(`${event.message}\n`)
+      // A provider event this build does not model, printed through the same
+      // redaction as a thrown one: today's pi-ai mints none that carries token
+      // material, and a default branch that trusts that is a default branch
+      // that leaks the first time it stops being true.
+      if (typeof event.message === 'string') process.stdout.write(`${redactSecrets(event.message)}\n`)
   }
 }
 

@@ -25,14 +25,19 @@ const PARAMETER = /(\b(?:code|token|refresh_token|access_token|id_token|code_ver
 /**
  * Secret carried as a JSON string field. The name alternation covers every
  * `*token*`/`*secret*` field the provider can mint plus the exchange values
- * that are equally sufficient to obtain a credential; `user_code` is
- * deliberately absent, being the code the device flow asks the operator to
- * read aloud. The value alternation consumes JSON escapes so an embedded
- * quote cannot end the match early.
+ * that are equally sufficient to obtain a credential. `device_auth_id` is one
+ * of those: pi-ai polls the device token endpoint with `device_auth_id` and
+ * `user_code` together and nothing else, so the pair is the grant, and pi-ai
+ * quotes the whole device response — `Invalid OpenAI Codex device code
+ * response: {…}` — when one field of it is malformed. `user_code` stays
+ * readable on purpose, being the code the device flow asks the operator to
+ * read aloud, which is exactly why its partner must not be. The value
+ * alternation consumes JSON escapes so an embedded quote cannot end the match
+ * early.
  */
 const JSON_FIELD = new RegExp(
   '("(?:[A-Za-z0-9_-]*(?:token|secret|password|credential)[A-Za-z0-9_-]*'
-  + '|code_verifier|authorization_code|device_code|api_?key)"\\s*:\\s*")(?:[^"\\\\]|\\\\.)*',
+  + '|code_verifier|authorization_code|device_code|device_?auth_?id|api_?key)"\\s*:\\s*")(?:[^"\\\\]|\\\\.)*',
   'giu',
 )
 

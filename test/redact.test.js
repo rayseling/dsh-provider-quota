@@ -43,6 +43,20 @@ describe('redactSecrets: shapes pi-ai throws', () => {
     assert.match(out, /"user_code":"ABCD-EFGH"/u, 'the device code is meant to be read aloud')
   })
 
+  test('device code request response (openai-codex.js:167)', () => {
+    // pi-ai polls the device token endpoint with `device_auth_id` and
+    // `user_code` and nothing else, so quoting both is quoting the grant. The
+    // user code stays legible because the operator has to read it aloud; its
+    // partner is what makes that safe.
+    const out = redactSecrets(
+      'Invalid OpenAI Codex device code response:'
+      + ' {"device_auth_id":"da_SECRET","user_code":"ABCD-EFGH","interval":null}',
+    )
+    assert.doesNotMatch(out, /da_SECRET/u)
+    assert.match(out, /"user_code":"ABCD-EFGH"/u, 'the device code is meant to be read aloud')
+    assert.doesNotMatch(redactSecrets('{"deviceAuthId":"da_SECRET"}'), /da_SECRET/u)
+  })
+
   test('non-2xx token response quoting the raw body (openai-codex.js:99)', () => {
     const out = redactSecrets(`OpenAI Codex token refresh failed (400): {"error":"invalid_grant","refresh_token":"${SECRET}"}`)
     assert.doesNotMatch(out, new RegExp(SECRET, 'u'))

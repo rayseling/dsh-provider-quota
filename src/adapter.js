@@ -72,22 +72,57 @@ function withDeadline(promise, timeoutMs, onTimeout) {
 const REFRESH_TIMEOUT_MARKER = 'dsh-codex-lite: OpenAI Codex token refresh did not answer'
 
 /**
- * Whether a credential failure is a stall rather than a rejection.
- *
- * Two conditions qualify: this module's own refresh deadline, and another
- * writer holding the credential file lock — `dsh-atomic-write` gives a
- * contender a fixed two-second acquisition deadline, and the holder is only
- * committing a rotation. Both clear on their own, which makes them timeouts
- * rather than auth failures, and so eligible for the route's retry policy.
- * pi-ai reports either one as a `ModelsError` that folds the cause text into
- * its own message, so the message is where the condition stays recognizable.
- * @param {unknown} error - thrown value.
- * @returns {boolean} whether the failure is expected to clear by itself.
+ * pi-ai's own wording for a refresh whose `fetch` never produced a response —
+ * DNS failure, a dropped link, a proxy refusing the connection. Copied from
+ * `pi-ai/dist/auth/oauth/openai-codex.js` (0.82.1), where it reads
+ * `OpenAI Codex token refresh error: ${cause}`.
  */
-function isTransientCredentialStall(error) {
-  return error instanceof Error
-    && (error.message.includes(REFRESH_TIMEOUT_MARKER)
-      || error.message.includes('timed out waiting for the writer lock'))
+const REFRESH_TRANSPORT_PREFIX = 'OpenAI Codex token refresh error:'
+
+/**
+ * pi-ai's own wording for a token endpoint that answered with a status —
+ * `OpenAI Codex token refresh failed (503): …` in the same module. The status
+ * is what separates a revoked grant from a bad five minutes at OpenAI.
+ */
+const REFRESH_STATUS = /OpenAI Codex token (?:refresh|exchange) failed \((\d{3})\)/u
+
+/**
+ * Classify a credential failure into the seam's retry taxonomy.
+ *
+ * The default retry policy retries `RATE_LIMIT`, `SERVER`, `TIMEOUT` and
+ * `TRANSPORT` and nothing else, so this function decides whether a failure
+ * ends the turn. Only a failure that says the grant itself is bad deserves
+ * `AUTH`: it is the one answer that sends the operator to `login`, and
+ * spending it on a dropped packet teaches them to re-authenticate for a
+ * problem re-authenticating cannot fix.
+ *
+ * Four conditions clear on their own. This module's own refresh deadline and
+ * another writer holding the credential file lock are stalls — `dsh-atomic-write`
+ * gives a contender a fixed two-second acquisition deadline, and the holder is
+ * only committing a rotation. A refresh that never reached the endpoint is
+ * transport. A 429 or a 5xx from the endpoint is the endpoint's own weather.
+ * Everything else — 400 `invalid_grant` above all — is the grant.
+ *
+ * The evidence is the message rather than a code, because pi-ai throws a plain
+ * `Error` at the refresh site and the `ModelsError` that carries it upward
+ * folds that text into its own message. Wording is therefore this plugin's
+ * dependency on pi-ai as much as the function signatures are; the tests pin
+ * the exact strings 0.82.1 emits, so a rewording upstream fails a test here
+ * rather than silently downgrading every blip back to `AUTH`.
+ * @param {unknown} error - thrown value.
+ * @returns {string} the seam error code to report it under.
+ */
+function classifyCredentialFailure(error) {
+  if (!(error instanceof Error)) return 'AUTH'
+  const message = error.message
+  if (message.includes(REFRESH_TIMEOUT_MARKER)
+    || message.includes('timed out waiting for the writer lock')) return 'TIMEOUT'
+  if (message.includes(REFRESH_TRANSPORT_PREFIX)) return 'TRANSPORT'
+  const status = REFRESH_STATUS.exec(message)
+  if (status === null) return 'AUTH'
+  const code = Number(status[1])
+  if (code === 429) return 'RATE_LIMIT'
+  return code >= 500 ? 'SERVER' : 'AUTH'
 }
 
 /**
@@ -301,10 +336,19 @@ export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOve
         // and lock contention alike as a plain `ModelsError`, which the seam
         // classifies as `UNKNOWN` and never retries; its message also carries
         // whatever the token endpoint answered, token material included.
+        //
+        // No `cause`, so the redacted text above is the whole diagnostic.
+        // Attaching the original would leave the token response live on an
+        // object every renderer that walks a `cause` chain will print —
+        // `errorChain`, an unhandled-rejection trace, `util.inspect` in a log
+        // line. The seam happens to detach adapter failures to `{message,
+        // code}` before they reach the browser, so nothing published today
+        // would carry it; that is the seam's decision to revisit, not this
+        // module's to depend on, and redacting a message while keeping the
+        // unredacted one attached to it is not a boundary worth holding.
         throw new LlmError(
           `OpenAI Codex credential resolution failed: ${safeMessage(error)}`,
-          isTransientCredentialStall(error) ? 'TIMEOUT' : 'AUTH',
-          { cause: error },
+          classifyCredentialFailure(error),
         )
       }
       const apiKey = resolved?.auth.apiKey
