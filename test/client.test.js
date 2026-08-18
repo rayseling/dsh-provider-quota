@@ -246,6 +246,44 @@ describe('rowsOf', () => {
   })
 })
 
+describe('hintsOf', () => {
+  test('explains why a composition row cannot be cleared, alongside its numbers', () => {
+    const { hintsOf } = materialize().exports
+    const lines = hintsOf({ source: 'base', value: 1_000_000, invalid: false }, 'zh')
+    assert.equal(lines.length, 2, 'the derived numbers, then the reason Clear is disabled')
+    assert.match(lines[0].text, /1,000,000/u)
+    assert.match(lines[1].text, /cordis\.patch\.yml/u)
+  })
+
+  test('says nothing extra for a row the user layer owns', () => {
+    const { hintsOf } = materialize().exports
+    const lines = hintsOf({ source: 'user', value: 900_000, invalid: false }, 'zh')
+    assert.equal(lines.length, 1)
+    assert.doesNotMatch(lines[0].text, /cordis\.patch\.yml/u)
+  })
+
+  test('an invalid draft replaces the numbers with the reason', () => {
+    const { hintsOf } = materialize().exports
+    const [line, ...rest] = hintsOf({ source: 'none', value: undefined, invalid: true }, 'zh')
+    assert.equal(line.error, true)
+    assert.deepEqual(rest, [])
+  })
+
+  test('still explains the composition row while its draft is invalid', () => {
+    const { hintsOf } = materialize().exports
+    const lines = hintsOf({ source: 'base', value: undefined, invalid: true }, 'zh')
+    assert.equal(lines.length, 2)
+    assert.equal(lines[0].error, true)
+    assert.match(lines[1].text, /cordis\.patch\.yml/u)
+  })
+
+  test('answers in English too, and falls back for an unknown language', () => {
+    const { hintsOf } = materialize().exports
+    assert.match(hintsOf({ source: 'base', value: 1000, invalid: false }, 'en')[1].text, /cordis\.patch\.yml/u)
+    assert.equal(hintsOf({ source: 'base', value: 1000, invalid: false }, 'kl').length, 2)
+  })
+})
+
 describe('buildOps', () => {
   const user = { modelOverrides: { 'gpt-5.5': { contextWindow: 500_000 } } }
 

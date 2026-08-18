@@ -55,6 +55,8 @@ pi-ai 的 catalog 给每个模型写死了尺寸,用的是 OpenAI 为 Codex 客�
 几个刻意的行为:
 
 - 来自 `cordis.patch.yml` 的行标为**配置层**,只能覆盖、不能在这里删除:用户层是合并上去的,删掉用户层的值会回落到 patch 的值,而不是回落到 catalog。
+
+  **所以别把日常想调的值写进 `cordis.patch.yml`。** 只写在 `settings.yaml`(即 UI 里)的模型,清除后干净地回到 catalog 默认;写进 patch 的则成了操作员在 UI 里撤不掉的地板。patch 层留给"这台部署开箱就该是这个数"的场景。
 - 写了 catalog 里不存在的模型 id,会被**拒绝写入**(而不是写进去再失效),卡片直接显示 seam 返回的原文,里面列出了全部已知 id。
 - 卡片只在部署确实提供了这个配置段时出现;远程浏览器(非回环)还需要 profile 的 `connection` 配了 `privilegedAuthority: trusted-hosts`,否则配置面只对回环开放。
 
@@ -82,6 +84,8 @@ llm-openai-codex-lite:
 ```
 
 这等价于 Codex CLI 的 `model_context_window`(`~/.codex/config.toml` 对 dsh 无效,本插件不读 `~/.codex`)。唯一的字段是 `contextWindow`,省略即继承 catalog;这一层写了不存在的模型 id 会在**加载时**报错,而不是静默失效。
+
+这一层是可选的:不写它,一切都从 UI 管,清除即回 catalog 默认。
 
 没有输出上限字段:Codex 的 Responses 请求体里根本不带 `max_output_tokens`,所以一个 `maxTokens` 既到不了服务端,也不会出现在会话面上的模型信息里——与其提供一个静默无效的旋钮,不如不提供。
 

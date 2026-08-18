@@ -32,6 +32,9 @@
     /** The settings namespace this card edits; must equal the host half's. */
     var SETTINGS_NS = 'llm-openai-codex-lite'
 
+    /** The LLM route this plugin owns, as the model catalog groups it. */
+    var OPENAI_CODEX_ROUTE = 'openai-codex'
+
     /** The compaction trigger ratio the shipped agent presets leave at its default. */
     var THRESHOLD_RATIO = 0.8
 
@@ -55,7 +58,7 @@
         sourceUser: '用户层',
         sourceBase: '配置层',
         sourceNone: '未设置',
-        baseHint: '由 cordis.patch.yml 提供,只能覆盖、不能在这里删除。',
+        baseHint: '来自 cordis.patch.yml:可以在这里覆盖,但要删除得改那个文件——用户层是合并上去的,没法删掉下层的键。',
         invalid: '要一个正整数,可写 1m / 272k。',
         conflict: '配置已被其他地方改动,已重新读取,请确认后再保存。',
         offline: '写入没有送达主机,请检查连接后重试。',
@@ -86,7 +89,7 @@
         sourceUser: 'user layer',
         sourceBase: 'composition',
         sourceNone: 'unset',
-        baseHint: 'Set by cordis.patch.yml: it can be overridden here, not deleted.',
+        baseHint: 'From cordis.patch.yml: it can be overridden here, but deleting it means editing that file — the user layer merges over the one below and cannot remove its keys.',
         invalid: 'Expected a positive integer; 1m and 272k are accepted.',
         conflict: 'The document changed elsewhere. It has been re-read — review and save again.',
         offline: 'The write never reached the host. Check the connection and retry.',
@@ -187,6 +190,32 @@
           baseValue: inBase ? windowIn(baseOverrides, id) : undefined,
         }
       })
+    }
+
+    /**
+     * The lines shown under one row: what the number means, and — for a value
+     * the layer below supplies — why it cannot be cleared here.
+     *
+     * Pure, and exported, because the second line is the answer to the first
+     * question the disabled Clear button provokes: leaving it unsaid is what
+     * makes a greyed-out control look broken instead of explained.
+     * @param {object} row - one row from {@link rowsOf}.
+     * @param {string} language - the active language key.
+     * @returns {{text: string, error?: boolean}[]} the lines, in order.
+     */
+    function hintsOf(row, language) {
+      var text = TEXT[language] || TEXT.zh
+      var lines = []
+      if (row.invalid) {
+        lines.push({ text: text.invalid, error: true })
+      } else if (row.value !== undefined) {
+        lines.push({
+          text: groupDigits(row.value) + ' ' + text.tokens + ' · ' + text.trigger + ' '
+            + groupDigits(Math.floor(row.value * THRESHOLD_RATIO)),
+        })
+      }
+      if (row.source === 'base') lines.push({ text: text.baseHint })
+      return lines
     }
 
     /**
@@ -334,28 +363,43 @@
       this.publish()
     }
 
-    /** Load the catalog's model ids, so the add row can offer them. Best effort. */
+    /**
+     * Load the catalog's model ids, so the add row can offer them.
+     *
+     * Best effort: an unreachable catalog only costs the add row its
+     * suggestions, since the free-text field still reaches every model and the
+     * host half refuses an unknown id with a message naming all of them. It is
+     * still reported, because a suggestion list that is quietly always empty
+     * looks like a feature nobody built rather than a call that failed.
+     */
     Controller.prototype.loadCatalog = function () {
       var self = this
       var request
       try {
         request = this.api.llm.models({})
-      } catch (_wireUnavailable) {
+      } catch (error) {
+        console.warn('[dsh-codex-lite] model catalog unavailable:', error)
         return
       }
       Promise.resolve(request).then(function (response) {
-        if (response === undefined || response.result === undefined || !response.result.ok) return
-        var groups = response.result.value.groups || []
-        for (var index = 0; index < groups.length; index++) {
-          if (groups[index].id !== 'openai-codex') continue
-          self.catalog = (groups[index].models || []).map(function (model) { return model.id })
-          self.publish()
+        var result = response === undefined ? undefined : response.result
+        if (result === undefined || !result.ok) {
+          console.warn('[dsh-codex-lite] model catalog refused:', result && result.error)
           return
         }
-      }, function () {
-        // An unreachable catalog only costs the add row its suggestions; the
-        // free-text field still reaches every model, and the host half refuses
-        // an id the catalog does not carry with a message naming all of them.
+        var groups = (result.value && result.value.groups) || []
+        var group
+        for (var index = 0; index < groups.length; index++) {
+          if (groups[index].id === OPENAI_CODEX_ROUTE) group = groups[index]
+        }
+        if (group === undefined) {
+          console.warn('[dsh-codex-lite] model catalog carries no ' + OPENAI_CODEX_ROUTE + ' group')
+          return
+        }
+        self.catalog = (group.models || []).map(function (model) { return model.id })
+        self.publish()
+      }, function (error) {
+        console.warn('[dsh-codex-lite] model catalog request failed:', error)
       })
     }
 
@@ -427,12 +471,7 @@
       }
 
       var rows = state.rows.map(function (row) {
-        var hint = row.invalid
-          ? text.invalid
-          : row.value === undefined
-            ? (row.source === 'base' ? text.baseHint : '')
-            : groupDigits(row.value) + ' ' + text.tokens + ' · ' + text.trigger + ' '
-              + groupDigits(Math.floor(row.value * THRESHOLD_RATIO))
+        var hints = hintsOf(row, state.language)
         return h('div', { key: row.model, style: STYLE.row },
           h('code', { style: STYLE.model }, row.model),
           h('input', {
@@ -451,9 +490,12 @@
             type: 'button',
             style: STYLE.link,
             disabled: !state.writable || state.saving || !row.clearable,
+            title: row.source === 'base' && !row.clearable ? text.baseHint : undefined,
             onClick: function () { props.clearRow(row.model) },
           }, text.clear),
-          hint === '' ? null : h('p', { style: row.invalid ? STYLE.hintError : STYLE.hint }, hint),
+          hints.map(function (line, index) {
+            return h('p', { key: index, style: line.error ? STYLE.hintError : STYLE.hint }, line.text)
+          }),
         )
       })
 
@@ -624,6 +666,7 @@
       formatWindow: formatWindow,
       buildOps: buildOps,
       rowsOf: rowsOf,
+      hintsOf: hintsOf,
     }
   }
 })()
