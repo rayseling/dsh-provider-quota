@@ -12,6 +12,9 @@
   "bin": {
     "dsh-codex-lite": "src/bin.js"
   },
+  "scripts": {
+    "test": "node --test"
+  },
   "files": [
     "src",
     "cordis.patch.yml",

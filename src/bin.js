@@ -11,15 +11,38 @@ import { realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
 import { loginOpenAICodex, logoutOpenAICodex, openAICodexAuthStatus } from './auth.js'
+import { safeMessage } from './redact.js'
 import { openAICodexAuthPath } from './store.js'
 
 /**
- * Open one HTTPS URL with the platform browser, best effort.
- * @param {string} rawUrl - the authorization URL announced by the provider.
+ * Validate one authorization URL the provider announced, before it is shown to
+ * the operator or handed to the platform opener.
+ *
+ * The printed line is an instruction to go and authenticate, so a URL that
+ * does not parse, or that would send the operator to a non-HTTPS origin, fails
+ * the sign-in rather than being displayed. The raw value stays out of the
+ * diagnostics, since an authorization URL carries exchange parameters.
+ * @param {string} rawUrl - the URL announced by the provider.
+ * @returns {URL} the parsed HTTPS URL.
  */
-function openBrowser(rawUrl) {
-  const url = new URL(rawUrl)
-  if (url.protocol !== 'https:') throw new Error(`refusing to open non-HTTPS authorization URL from ${url.host}`)
+function checkedAuthUrl(rawUrl) {
+  let url
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    throw new Error('the provider announced an authorization URL that does not parse')
+  }
+  if (url.protocol !== 'https:') throw new Error(`refusing a non-HTTPS authorization URL from ${url.host}`)
+  return url
+}
+
+/**
+ * Hand one validated URL to the platform browser, best effort. Failing to
+ * launch is not a sign-in failure: the URL is already on stdout, which is the
+ * manual fallback, so nothing here throws.
+ * @param {URL} url - authorization URL that passed {@link checkedAuthUrl}.
+ */
+function openBrowser(url) {
   const command = process.platform === 'win32'
     ? { file: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', url.href] }
     : process.platform === 'darwin'
@@ -35,32 +58,24 @@ function openBrowser(rawUrl) {
 }
 
 /**
- * Strip token-shaped material from an external OAuth diagnostic.
- * @param {unknown} error - thrown value.
- * @returns {string} printable message.
- */
-function safeMessage(error) {
-  const message = error instanceof Error ? error.message : String(error)
-  return message
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[redacted token]')
-    .replace(/(\b(?:code|token|refresh_token|access_token)=)[^&\s]+/giu, '$1[redacted]')
-}
-
-/**
  * Render one provider auth event.
  * @param {import('@earendil-works/pi-ai').AuthEvent} event - provider event.
  */
 function notify(event) {
   switch (event.type) {
-    case 'auth_url':
+    case 'auth_url': {
+      const url = checkedAuthUrl(event.url)
       process.stdout.write(`Open this URL to sign in:\n${event.url}\n`)
       if (event.instructions !== undefined) process.stdout.write(`${event.instructions}\n`)
-      openBrowser(event.url)
+      openBrowser(url)
       break
-    case 'device_code':
+    }
+    case 'device_code': {
+      const url = checkedAuthUrl(event.verificationUri)
       process.stdout.write(`Open this URL to sign in:\n${event.verificationUri}\nEnter code: ${event.userCode}\n`)
-      openBrowser(event.verificationUri)
+      openBrowser(url)
       break
+    }
     default:
       if (typeof event.message === 'string') process.stdout.write(`${event.message}\n`)
   }
@@ -137,6 +152,26 @@ export async function run(argv) {
   }
 }
 
-if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
+/**
+ * Whether this module is the process entry point.
+ *
+ * `realpathSync` resolves the symlink a package manager installs as
+ * `node_modules/.bin/dsh-codex-lite`, so the comparison holds for the
+ * installed command as well as for a direct path. An entry that cannot be
+ * resolved is simply not this module: importing `bin.js` must not fail on the
+ * state of an argument that belongs to some other program.
+ * @returns {boolean} whether this process should run a credential command.
+ */
+function isProcessEntry() {
+  const entry = process.argv[1]
+  if (entry === undefined) return false
+  try {
+    return fileURLToPath(import.meta.url) === realpathSync(entry)
+  } catch {
+    return false
+  }
+}
+
+if (isProcessEntry()) {
   process.exitCode = await run(process.argv.slice(2))
 }

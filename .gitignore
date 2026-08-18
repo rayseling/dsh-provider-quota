@@ -1,4 +1,7 @@
-node_modules/
+# No trailing slash: a `node_modules/` pattern matches a directory only, and
+# the local way to run the full test suite is to symlink this name at the
+# profile tree that holds the peer dependencies.
+node_modules
 lib/
 *.log
 .DS_Store

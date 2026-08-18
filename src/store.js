@@ -5,8 +5,15 @@
  * On-disk document: `{ version: 1, credential: <pi-ai OAuthCredential> }` at
  * `$DSH_HOME/.openai-codex-auth.json` — the same path and format the dsh-codex
  * bundle uses, so a sign-in done by either package serves both. The file is
- * written atomically with mode 0600 (dir 0700) under a cross-process file
- * lock, and any file readable beyond its owner is refused on read.
+ * written atomically with mode 0600 under a cross-process file lock, and a
+ * `$DSH_HOME` this plugin creates is created 0700 (an existing one keeps
+ * whatever mode it already has).
+ *
+ * Refusing to read a file that is readable beyond its owner is a POSIX
+ * guarantee only: Windows synthesizes the mode bits Node reports and its
+ * access control lives in an ACL that a mode cannot express, so there the
+ * document is protected by the directory holding it, exactly as every other
+ * harness secret under `$DSH_HOME` is.
  * @module dsh-codex-lite/store
  */
 
@@ -40,9 +47,14 @@ function isENOENT(error) {
 
 /**
  * Reject a credential document readable by another POSIX user.
+ *
+ * Windows is exempt before anything is read: the mode it reports is
+ * synthesized from the read-only attribute rather than derived from the file's
+ * ACL, so the check could only produce a false verdict either way.
  * @param {string} filename - document path.
  */
 async function assertOwnerOnly(filename) {
+  if (process.platform === 'win32') return
   let mode
   try {
     mode = (await stat(filename)).mode
@@ -50,7 +62,6 @@ async function assertOwnerOnly(filename) {
     if (isENOENT(error)) return
     throw error
   }
-  if (process.platform === 'win32') return
   if ((mode & 0o077) !== 0) {
     throw new Error(
       `dsh-codex-lite: ${filename} is readable beyond its owner (mode ${(mode & 0o777).toString(8)});`

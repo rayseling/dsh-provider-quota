@@ -2,14 +2,14 @@
 
 在 DeepSeek Harness 里用 ChatGPT Plus/Pro 订阅跑 Codex 模型 —— 只做这一件事。
 
-四个源文件、零构建、零客户端代码。官方件能用的全用官方件:
+六个源文件、零构建、零客户端代码。官方件能用的全用官方件:
 
 | 职责 | 由谁承担 |
 |---|---|
 | OAuth(授权码 + PKCE、`auth.openai.com`、`127.0.0.1:1455` 回调、设备码、token 刷新) | `@earendil-works/pi-ai` 官方实现 |
 | 模型目录、wire 协议(`chatgpt.com/backend-api` Responses) | pi-ai 官方 `openai-codex` catalog provider |
 | 消息/流转换、附件、重试、reasoning 元数据 | dsh 官方 `PiAiAdapter`(`@deepseek-ai/dsh-llm-pi-ai` 公开导出) |
-| 本插件自己写的 | 一个 0600 权限的凭据文件存储 + 终端登录命令 + 一个把 OAuth token 作为请求级 bearer 交给官方适配器的 15 行桥 |
+| 本插件自己写的 | 一个 0600 权限的凭据文件存储 + 终端登录命令 + 一个把 OAuth token 作为请求级 bearer 交给官方适配器的桥(含凭据解析的单飞与超时护栏)+ 一个 token 脱敏器 |
 
 **刻意不做的**(相对 dsh-codex):不注册任何 HTTP 路由、不挂 Settings UI、不接管 web 搜索、无 imagegen、不改写 `read_image`、无 TUI、不改默认模型。登录只在 dsh 主机的终端里发生,浏览器面零暴露。
 
@@ -30,6 +30,8 @@ dsh plugin --profile web exec dsh-codex-lite logout
 
 凭据存放在 `$DSH_HOME/.openai-codex-auth.json`(0600,属主之外可读即拒绝;与 `~/.codex` 互不相干)。与 dsh-codex 同路径同格式,两个插件登录状态互通。
 
+**权限拒绝只在 POSIX 上成立。** Windows 报告的 mode 是从只读属性合成的,与文件真正的 ACL 无关,所以那里没有等价检查——凭据靠所在目录的 ACL 保护,和 `$DSH_HOME` 下其他 harness 机密一样。
+
 ## 使用
 
 重启 `dsh web`,在会话里 `/model` 选 `openai-codex` 下的模型即可;默认模型保持你原有设置不变。未登录时请求会明确报错并提示登录命令。
@@ -47,7 +49,9 @@ pi-ai 的 catalog 给每个模型写死了尺寸,用的是 OpenAI 为 Codex 客�
         contextWindow: 1000000
 ```
 
-这等价于 Codex CLI 的 `model_context_window`(`~/.codex/config.toml` 对 dsh 无效,本插件不读 `~/.codex`)。可选字段只有 `contextWindow` 和 `maxTokens`,省略即继承 catalog;写了 catalog 里不存在的模型 id 会在加载时报错,不会静默失效。
+这等价于 Codex CLI 的 `model_context_window`(`~/.codex/config.toml` 对 dsh 无效,本插件不读 `~/.codex`)。唯一的字段是 `contextWindow`,省略即继承 catalog;写了 catalog 里不存在的模型 id 会在加载时报错,不会静默失效。
+
+没有输出上限字段:Codex 的 Responses 请求体里根本不带 `max_output_tokens`,所以一个 `maxTokens` 既到不了服务端,也不会出现在会话面上的模型信息里——与其提供一个静默无效的旋钮,不如不提供。
 
 **这是本地记账,数字不发给服务端。** 它决定两件事:上下文计量表的总量,以及会话在压缩前能留多少历史。超过 272000 tokens 的输入按模型更贵的计费档走(订阅下体现为额度消耗)。
 
@@ -75,6 +79,25 @@ dsh 用比例而不是绝对值,所以没有与 Codex 的 `model_auto_compact_to
 ## 卸载
 
 ```sh
+dsh plugin --profile web exec dsh-codex-lite logout   # 先登出:remove 之后这个命令就没了
 dsh plugin --profile web remove dsh-codex-lite
-dsh plugin --profile web exec dsh-codex-lite logout   # 或直接删除凭据文件(先于 remove 执行)
 ```
+
+## 测试
+
+```sh
+npm test        # node --test,无构建、无测试框架依赖
+```
+
+`test/redact.test.js` 只依赖 Node,任何检出里都能跑。store / adapter / CLI 三份测试需要 peer 依赖可解析,裸检出里会显式标记 skip,而不是伪装通过。
+
+要跑全部,**检出目录自己**得有一棵可解析的 `node_modules`:ESM 的裸导入从导入文件所在位置逐级向上找,与 cwd 无关,所以 `cd` 到装好插件的 profile 再跑没有用——测试文件仍在检出里。软链到 profile 共享的那棵树即可:
+
+```sh
+ln -s ~/.dsh/profiles/node_modules node_modules
+npm test
+```
+
+`.gitignore` 里的 `node_modules` 不带尾斜杠正是为此:带斜杠的模式只匹配目录,这个软链会漏进 `git status`。
+
+测试从不联网:token 端点在 `globalThis.fetch` 上打桩,凭据一律写进临时 `$DSH_HOME` 并在文件跑完后删除,`login` 不在测试范围内。

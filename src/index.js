@@ -23,7 +23,8 @@ export const name = 'llm-openai-codex-lite'
 export const inject = ['llm']
 
 /**
- * Per-model replacements for the installed pi-ai catalog's sizing, by model id.
+ * Per-model replacements for the installed pi-ai catalog's context window, by
+ * model id.
  *
  * The catalog carries the conservative numbers OpenAI tuned the Codex client
  * around, not the model's documented ceiling: `gpt-5.6-sol` ships as a 272000
@@ -34,12 +35,15 @@ export const inject = ['llm']
  * reaches the server, which enforces its own limit and prices input above
  * 272000 at a higher tier.
  *
+ * The window is the only field worth replacing on this route: the Codex
+ * Responses request body carries no output-token cap, so an output size would
+ * change neither what the seam publishes nor what reaches the server.
+ *
  * Empty by default, so an unconfigured install keeps the catalog exactly.
  */
 export const Config = z.object({
   modelOverrides: z.dict(z.object({
     contextWindow: z.number().step(1).min(1),
-    maxTokens: z.number().step(1).min(1),
   })).default({}),
 })
 
@@ -48,7 +52,7 @@ export const Config = z.object({
  * is an effect owned by this plugin's fiber, so unloading the plugin releases
  * the route.
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context carrying the LLM registry.
- * @param {{modelOverrides?: Record<string, {contextWindow?: number, maxTokens?: number}>}} [config] - validated plugin config.
+ * @param {{modelOverrides?: Record<string, {contextWindow?: number}>}} [config] - validated plugin config.
  */
 export function apply(ctx, config) {
   const store = new OpenAICodexCredentialStore()

@@ -1,0 +1,220 @@
+/**
+ * Unit tests for the adapter: catalog sizing, and the guards around credential
+ * resolution. The token endpoint is stubbed at `globalThis.fetch`, which is
+ * where pi-ai's refresh actually calls out, so these exercise the real
+ * `getAuth -> modify -> writer lock -> refresh` path without a network.
+ *
+ * The adapter imports pi-ai and two harness packages, so a checkout without
+ * the peer dependencies installed skips instead of failing.
+ */
+
+import assert from 'node:assert/strict'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { after, afterEach, describe, test } from 'node:test'
+
+const loaded = await Promise.all([
+  import('../src/adapter.js'),
+  import('../src/store.js'),
+  import('@deepseek-ai/dsh-llm'),
+]).then(modules => ({ modules }), error => ({ error }))
+const skip = loaded.error === undefined ? false : `peer dependencies are not installed (${loaded.error.code ?? 'import failed'})`
+const [adapterModule, storeModule, llmModule] = loaded.modules ?? []
+
+const MODEL = 'gpt-5.6-sol'
+const realFetch = globalThis.fetch
+afterEach(() => { globalThis.fetch = realFetch })
+
+/**
+ * A Codex access token. pi-ai reads the ChatGPT account id out of this claim
+ * both when it stores a credential and when it builds request headers, so a
+ * token without it is rejected before anything is persisted.
+ * @returns {string} a JWT carrying the account claim.
+ */
+function accessToken() {
+  const segment = value => Buffer.from(JSON.stringify(value)).toString('base64url')
+  return [
+    segment({ alg: 'none', typ: 'JWT' }),
+    segment({ 'https://api.openai.com/auth': { chatgpt_account_id: 'acc_test' } }),
+    'signature',
+  ].join('.')
+}
+
+/** Temp homes this file created; every one holds a credential document. */
+const homes = []
+after(() => Promise.all(homes.map(home => rm(home, { recursive: true, force: true }))))
+
+/** @returns {Promise<string>} a tracked, empty harness home. */
+async function freshHome() {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-codex-lite-adapter-'))
+  homes.push(home)
+  return home
+}
+
+/**
+ * A temp home holding one credential document.
+ * @param {boolean} [expired] - whether the access token is already past expiry.
+ * @returns {Promise<string>} the home path.
+ */
+async function homeWithCredential(expired = true) {
+  const home = await freshHome()
+  const document = {
+    version: 1,
+    credential: {
+      type: 'oauth',
+      access: accessToken(),
+      refresh: 'rt_STORED',
+      expires: expired ? Date.now() - 1_000 : Date.now() + 3_600_000,
+    },
+  }
+  await writeFile(join(home, '.openai-codex-auth.json'), `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 })
+  return home
+}
+
+/** @param {string} home @returns {object} an adapter over that home, with no attachment service. */
+const adapterOver = (home, overrides = {}) => adapterModule.createOpenAICodexLiteAdapter(
+  new storeModule.OpenAICodexCredentialStore(home),
+  () => undefined,
+  overrides,
+)
+
+/** Take one stream far enough to resolve a credential, and report what happened. */
+async function resolveOnce(adapter) {
+  try {
+    for await (const _chunk of adapter.stream({ provider: 'openai-codex', model: MODEL, messages: [{ role: 'user', content: 'hi' }] })) break
+    return undefined
+  } catch (error) {
+    return error
+  }
+}
+
+/** @param {string} home @returns {Promise<boolean>} whether a writer lock is still present. */
+const isLocked = async home => (await readdir(home)).some(entry => entry.endsWith('.lock'))
+
+/** A token response body that satisfies pi-ai's field check. */
+const tokenBody = (refresh = 'rt_ROTATED') => JSON.stringify({
+  access_token: accessToken(),
+  refresh_token: refresh,
+  expires_in: 3600,
+})
+
+describe('catalog sizing', { skip }, () => {
+  test('a context-window override reaches the resolved model', async () => {
+    const adapter = adapterOver(await homeWithCredential(), { [MODEL]: { contextWindow: 1_000_000 } })
+    const info = await adapter.resolveModel('openai-codex', MODEL)
+    assert.equal(info.context.contextWindow, 1_000_000)
+  })
+
+  test('the route publishes no output cap, so none is invented', async () => {
+    const adapter = adapterOver(await homeWithCredential(), { [MODEL]: { contextWindow: 1_000_000 } })
+    const info = await adapter.resolveModel('openai-codex', MODEL)
+    assert.equal('defaultMaxTokens' in info, false)
+  })
+
+  test('an unconfigured route keeps the installed catalog', async () => {
+    const adapter = adapterOver(await homeWithCredential())
+    const models = await adapter.listModels('openai-codex')
+    assert.ok(models.some(model => model.id === MODEL), 'the catalog still lists its models')
+    assert.equal((await adapter.resolveModel('openai-codex', MODEL)).context.contextWindow, 272_000)
+  })
+
+  test('an override naming a model the catalog does not carry is refused at load', async () => {
+    const home = await homeWithCredential()
+    assert.throws(
+      () => adapterOver(home, { 'gpt-9-nonexistent': { contextWindow: 5 } }),
+      /modelOverrides names "gpt-9-nonexistent"/u,
+    )
+  })
+})
+
+describe('credential resolution', { skip }, () => {
+  test('signed out asks for the login command by name', async () => {
+    const home = await freshHome()
+    globalThis.fetch = async () => assert.fail('a signed-out route must not call the token endpoint')
+    const error = await resolveOnce(adapterOver(home))
+    assert.ok(error instanceof llmModule.LlmError)
+    assert.equal(error.code, 'MISSING_CREDENTIAL')
+    assert.match(error.message, /dsh-codex-lite login/u)
+  })
+
+  test('a valid token is used without contacting the token endpoint', async () => {
+    const home = await homeWithCredential(false)
+    let called = false
+    globalThis.fetch = async () => { called = true; return new Response('{}', { status: 500 }) }
+    await resolveOnce(adapterOver(home))
+    assert.equal(called, false, 'an unexpired credential costs no refresh')
+  })
+
+  test('an expired token is refreshed once and the rotation is persisted', async () => {
+    const home = await homeWithCredential()
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      return new Response(tokenBody(), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const error = await resolveOnce(adapterOver(home))
+    assert.equal(error?.code, undefined, 'the credential resolved')
+    assert.equal(calls, 1)
+    const document = JSON.parse(await readFile(join(home, '.openai-codex-auth.json'), 'utf8'))
+    assert.equal(document.credential.refresh, 'rt_ROTATED')
+    assert.equal(document.credential.accountId, 'acc_test', 'provider-owned fields survive the round trip')
+    assert.equal(await isLocked(home), false, 'the writer lock is released')
+  })
+
+  test('concurrent requests share one refresh', async () => {
+    const home = await homeWithCredential()
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      await new Promise(resolve => setTimeout(resolve, 200))
+      return new Response(tokenBody(), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const adapter = adapterOver(home)
+    await Promise.all([resolveOnce(adapter), resolveOnce(adapter), resolveOnce(adapter)])
+    assert.equal(calls, 1, 'one rotation per expiry, not one per request')
+  })
+})
+
+describe('credential failures', { skip }, () => {
+  test('a rejected refresh becomes an LlmError instead of a bare provider error', async () => {
+    const home = await homeWithCredential()
+    globalThis.fetch = async () => new Response('{"error":"invalid_grant"}', { status: 400 })
+    const error = await resolveOnce(adapterOver(home))
+    assert.ok(error instanceof llmModule.LlmError)
+    assert.equal(error.code, 'AUTH')
+    assert.match(error.message, /invalid_grant/u, 'the provider diagnostic survives')
+  })
+
+  test('a token response carrying secrets is redacted before it is reported', async () => {
+    const home = await homeWithCredential()
+    globalThis.fetch = async () => new Response(
+      JSON.stringify({ access_token: 'a', refresh_token: 'rt_MUST_NOT_APPEAR', expires_in: 'not-a-number' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+    const error = await resolveOnce(adapterOver(home))
+    assert.ok(error instanceof llmModule.LlmError)
+    assert.doesNotMatch(error.message, /rt_MUST_NOT_APPEAR/u)
+    assert.match(error.message, /\[redacted\]/u)
+    assert.equal(await isLocked(home), false)
+  })
+
+  test('a stalled token endpoint fails as a retryable timeout and frees the lock', async () => {
+    const home = await homeWithCredential()
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      await new Promise((resolve) => { setTimeout(resolve, 600_000).unref() })
+      return new Response('{}')
+    }
+    const adapter = adapterOver(home)
+    const errors = await Promise.all([resolveOnce(adapter), resolveOnce(adapter)])
+    assert.equal(calls, 1, 'the stall is shared, not multiplied')
+    for (const error of errors) {
+      assert.ok(error instanceof llmModule.LlmError)
+      assert.equal(error.code, 'TIMEOUT', 'a stall clears by itself, so it is retryable')
+    }
+    await new Promise(resolve => setTimeout(resolve, 250))
+    assert.equal(await isLocked(home), false, 'other processes are not left waiting on an abandoned refresh')
+  })
+})
