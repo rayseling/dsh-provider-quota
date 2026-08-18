@@ -143,7 +143,7 @@ describe('activation', () => {
     const face = ctx.registrations[0].options.inject()
     assert.equal(typeof face.hooks.codexCard.getSnapshot, 'function')
     assert.equal(typeof face.hooks.codexCard.subscribe, 'function')
-    for (const name of ['edit', 'clearRow', 'addRow', 'save', 'discard']) {
+    for (const name of ['edit', 'resetRow', 'removeRow', 'addRow', 'save', 'discard']) {
       assert.equal(typeof face[name], 'function', `face.${name}`)
     }
     assert.equal(ctx.registrations[0].options.inject(), face, 'the face identity is stable, so the renderer can cache it')
@@ -232,11 +232,12 @@ describe('rowsOf', () => {
     assert.equal(row.staged, true)
   })
 
-  test('only a row the user layer holds, or one being edited, can be cleared', () => {
+  test('each row offers the action its value actually allows', () => {
     const { rowsOf } = materialize().exports
-    const rows = rowsOf(base, user, {})
-    assert.equal(rows.find(row => row.source === 'base').clearable, false)
-    assert.equal(rows.find(row => row.source === 'user').clearable, true)
+    const rows = rowsOf(base, user, { 'gpt-5.4': '' })
+    assert.equal(rows.find(row => row.source === 'base').action, 'locked', 'a config-file value cannot be taken away here')
+    assert.equal(rows.find(row => row.source === 'user').action, 'reset', 'a stored override goes back to the model default')
+    assert.equal(rows.find(row => row.model === 'gpt-5.4').action, 'remove', 'a row someone just added is dropped outright')
   })
 
   test('tolerates layers the Host has not reported yet', () => {
@@ -281,6 +282,19 @@ describe('hintsOf', () => {
     const { hintsOf } = materialize().exports
     assert.match(hintsOf({ source: 'base', value: 1000, invalid: false }, 'en')[1].text, /config file/u)
     assert.equal(hintsOf({ source: 'base', value: 1000, invalid: false }, 'kl').length, 2)
+  })
+})
+
+describe('removing a row someone added', () => {
+  test('drops it from the list instead of leaving an empty field behind', () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    face.addRow('gpt-5.4')
+    assert.equal(face.hooks.codexCard.getSnapshot().rows.length, 1)
+    face.removeRow('gpt-5.4')
+    assert.deepEqual(face.hooks.codexCard.getSnapshot().rows, [], 'the row is gone, with nothing to save')
   })
 })
 

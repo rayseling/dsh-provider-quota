@@ -38,19 +38,20 @@
     /** The compaction trigger ratio the shipped agent presets leave at its default. */
     var THRESHOLD_RATIO = 0.8
 
-    // Copy for someone who just wants a longer conversation. It names nothing
-    // they have not been shown: no file they were not told to open, and none
-    // of the harness vocabulary this plugin is built on.
+    // Copy for someone fluent in AI but not in this codebase: context length,
+    // tokens, compaction and billing tiers are words they already own, so the
+    // card uses them plainly — and names nothing that exists only in here.
     var TEXT = {
       zh: {
         title: 'OpenAI Codex',
-        description: '设置每个模型能记住多少内容。',
+        description: '调整每个模型的上下文长度。',
         expand: '展开',
         collapse: '收起',
         window: '上下文长度',
-        placeholder: '默认',
+        placeholder: '模型默认',
         add: '添加',
         addPlaceholder: '选择或输入模型',
+        remove: '移除',
         clear: '恢复默认',
         save: '保存',
         discard: '撤销',
@@ -59,23 +60,24 @@
         readOnly: '这里当前只能查看,不能修改。',
         sourceUser: '已修改',
         sourceBase: '来自配置文件',
-        sourceNone: '默认',
-        baseHint: '这个值写在本机的配置文件里。可以在这里调大调小,但要恢复默认得去改那个文件。',
+        sourceNone: '模型默认',
+        baseHint: '这个值写在本机的配置文件里。可以在这里调,但要回到模型默认值得去改那个文件。',
         invalid: '请填一个整数,比如 1000000;也可以写成 1m 或 272k。',
         conflict: '这项设置刚在别处被改过,已经重新读取。请确认后再保存。',
         offline: '没保存成功,连接中断了。请稍后重试。',
-        derived: '{value} tokens · 约 {trigger} 时开始自动整理较早的内容',
-        note: '调大只是让会话多保留一些历史。模型和服务端的真实上限不会变,而且超出模型原本长度的部分会按更贵的价格计费。',
+        derived: '{value} tokens · 约 {trigger} 时开始压缩较早的对话',
+        note: '这个数字只用于本机记账:会话能保留多少历史、什么时候开始压缩。模型真实的上下文上限不会因此变大,而且超出模型原生长度的输入会按更高的价格档计费。',
       },
       en: {
         title: 'OpenAI Codex',
-        description: 'How much each model can hold at once.',
+        description: 'Adjust each model’s context length.',
         expand: 'Expand',
         collapse: 'Collapse',
         window: 'Context length',
-        placeholder: 'default',
+        placeholder: 'model default',
         add: 'Add',
         addPlaceholder: 'pick or type a model',
+        remove: 'Remove',
         clear: 'Reset to default',
         save: 'Save',
         discard: 'Undo',
@@ -84,13 +86,13 @@
         readOnly: 'This page is read-only right now.',
         sourceUser: 'changed',
         sourceBase: 'from a config file',
-        sourceNone: 'default',
-        baseHint: 'This value is set in a config file on this machine. You can raise or lower it here, but resetting it to the default means editing that file.',
+        sourceNone: 'model default',
+        baseHint: 'This value is set in a config file on this machine. You can change it here, but getting back to the model default means editing that file.',
         invalid: 'Enter a whole number, such as 1000000. You can also write 1m or 272k.',
         conflict: 'Someone just changed this setting elsewhere, so it has been reloaded. Check it and save again.',
         offline: 'Not saved — the connection dropped. Please try again.',
-        derived: '{value} tokens · starts summarizing earlier turns around {trigger}',
-        note: 'Raising this only lets a conversation keep more history. It does not change the real limits of the model or the service, and anything past the model’s original length is billed at a higher rate.',
+        derived: '{value} tokens · compacts earlier turns around {trigger}',
+        note: 'This number is local bookkeeping only: how much history a conversation keeps, and when compaction starts. It does not raise the model’s real context limit, and input past the model’s native length is billed at a higher tier.',
       },
     }
 
@@ -175,7 +177,11 @@
           value: parsed !== undefined && parsed.kind === 'set' ? parsed.value : undefined,
           invalid: parsed === undefined,
           staged: staged,
-          clearable: inUser || staged,
+          // What this row's button does, which differs by where the value
+          // lives: a row that exists only because someone added it is removed
+          // outright, a stored one is reset to the model's own length, and one
+          // the config file supplies can be changed here but not taken away.
+          action: inBase ? 'locked' : inUser ? 'reset' : 'remove',
           baseValue: inBase ? windowIn(baseOverrides, id) : undefined,
         }
       })
@@ -295,7 +301,8 @@
       this.face = {
         hooks: { codexCard: this.store },
         edit: function (model, text) { self.edit(model, text) },
-        clearRow: function (model) { self.edit(model, '') },
+        resetRow: function (model) { self.edit(model, '') },
+        removeRow: function (model) { self.removeRow(model) },
         addRow: function (model) { self.addRow(model) },
         save: function () { return self.save() },
         discard: function () { self.discard() },
@@ -343,6 +350,12 @@
       var id = String(model).trim()
       if (id === '' || Object.prototype.hasOwnProperty.call(this.drafts, id)) return
       this.drafts[id] = ''
+      this.failure = undefined
+      this.publish()
+    }
+
+    Controller.prototype.removeRow = function (model) {
+      delete this.drafts[model]
       this.failure = undefined
       this.publish()
     }
@@ -479,10 +492,13 @@
           h('button', {
             type: 'button',
             style: STYLE.link,
-            disabled: !state.writable || state.saving || !row.clearable,
-            title: row.source === 'base' && !row.clearable ? text.baseHint : undefined,
-            onClick: function () { props.clearRow(row.model) },
-          }, text.clear),
+            disabled: !state.writable || state.saving || row.action === 'locked',
+            title: row.action === 'locked' ? text.baseHint : undefined,
+            onClick: function () {
+              if (row.action === 'remove') props.removeRow(row.model)
+              else if (row.action === 'reset') props.resetRow(row.model)
+            },
+          }, row.action === 'remove' ? text.remove : text.clear),
           hints.map(function (line, index) {
             return h('p', { key: index, style: line.error ? STYLE.hintError : STYLE.hint }, line.text)
           }),
