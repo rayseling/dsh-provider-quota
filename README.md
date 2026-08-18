@@ -98,6 +98,18 @@ llm-openai-codex-lite:
 
 `compaction-basic` 支持按模型分别设置(条目里带 `provider` + `model`),所以可以只调 sol 而不动别的;`retainRatio` 默认 `0.16`,决定压缩之后留下多少。
 
+### 卡片不见了
+
+如果 `settings.yaml` 里这一段在**启动时**就是坏的(比如手编时填了目录里没有的模型名),设置面不会登记这个 namespace,卡片也就无处可挂——面板里干脆看不到 OpenAI Codex 这张卡,而不是显示一张报错的卡。
+
+模型路由本身不受影响:它继续按配置文件里的基线值服务,请求照常走。所以症状是"能用,但改不了"。
+
+把 `settings.yaml` 里那一段改对(或整段删掉),**重启 dsh** 卡片就回来了。运行中修好文件不会让它自己出现——登记只在启动时发生一次。
+
+```sh
+grep -A 6 'llm-openai-codex-lite' "${DSH_HOME:-$HOME/.dsh}/settings.yaml"
+```
+
 ### 卡住了:`.lock` 残留
 
 刷新 token 的那一刻如果 dsh 被强杀(`kill -9`、断电),`$DSH_HOME` 里会留下一个锁文件。之后 `login` / `logout` 和每次自动刷新都会等两秒再失败,提示里带 `timed out waiting for the writer lock`。锁**不会自己过期**——文件的年龄证明不了持有者已经退出,所以没人敢替你判断。
