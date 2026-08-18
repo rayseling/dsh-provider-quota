@@ -96,12 +96,14 @@ const REFRESH_STATUS = /OpenAI Codex token (?:refresh|exchange) failed \((\d{3})
  * spending it on a dropped packet teaches them to re-authenticate for a
  * problem re-authenticating cannot fix.
  *
- * Four conditions clear on their own. This module's own refresh deadline and
+ * Five conditions clear on their own. This module's own refresh deadline and
  * another writer holding the credential file lock are stalls — `dsh-atomic-write`
  * gives a contender a fixed two-second acquisition deadline, and the holder is
  * only committing a rotation. A refresh that never reached the endpoint is
- * transport. A 429 or a 5xx from the endpoint is the endpoint's own weather.
- * Everything else — 400 `invalid_grant` above all — is the grant.
+ * transport. Any 5xx is the endpoint's own weather, and so are the only two
+ * 4xx that describe the moment rather than the grant: 408, the endpoint saying
+ * the request took too long, and 429, it saying not yet. Everything else —
+ * 400 `invalid_grant` above all — is the grant.
  *
  * The evidence is the message rather than a code, because pi-ai throws a plain
  * `Error` at the refresh site and the `ModelsError` that carries it upward
@@ -121,6 +123,7 @@ function classifyCredentialFailure(error) {
   const status = REFRESH_STATUS.exec(message)
   if (status === null) return 'AUTH'
   const code = Number(status[1])
+  if (code === 408) return 'TIMEOUT'
   if (code === 429) return 'RATE_LIMIT'
   return code >= 500 ? 'SERVER' : 'AUTH'
 }

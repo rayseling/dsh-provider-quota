@@ -480,7 +480,6 @@
       var payload = { ns: SETTINGS_NS, ops: ops }
       if (snapshot.revision !== undefined) payload.expectedRevision = snapshot.revision
       return Promise.resolve(this.api.settings.mutate(payload)).then(function (response) {
-        self.saving = false
         if (response !== undefined && response.result !== undefined && response.result.ok) {
           self.drafts = {}
           self.failure = undefined
@@ -493,18 +492,48 @@
             ? text.offline
             : error.code === 'settings-conflict' ? text.conflict : error.message
         }
-        // Re-read on every outcome, success included. A write this card made
-        // advances the document's revision, and the revision it holds comes
-        // from a forwarded `settings/document-updated` event that arrives on
-        // its own schedule — so a second save issued before that event lands
-        // would carry a stale `expectedRevision` and be refused as a conflict
-        // nobody caused. A conflict means the document moved under us, and a
-        // refusal is worth showing against current values.
-        try { void self.scope.load() } catch (_reloadUnavailable) { /* the scope reloads on its own signals too */ }
-        self.publish()
+        return self.settle()
       }, function () {
-        self.saving = false
         self.failure = text.offline
+        return self.settle()
+      })
+    }
+
+    /**
+     * End one save: show what the write produced, re-read the document, and
+     * only then let the card accept another write.
+     *
+     * Re-reading is what keeps the revision this card fences on level with the
+     * document it just moved — the scope learns the new revision from a read,
+     * not from the `mutate` response, and the forwarded
+     * `settings/document-updated` event arrives on its own schedule. But
+     * re-reading is asynchronous and queued, so releasing the card the moment
+     * `mutate` answers would reopen the same race one layer down: a second
+     * write issued inside that window still carries the superseded revision
+     * and is refused as a conflict nobody caused.
+     *
+     * So `saving` stays raised until the read settles, and the promise this
+     * returns — the one `save()` hands back — settles with it. That holds both
+     * doors: the button stays busy, and a caller that awaits a save sees a
+     * card ready for the next one. The wait is unbounded, like the wait on
+     * `mutate` above it, because both ride the same wire: a connection that
+     * strands one strands the other, and the card already says so.
+     * @returns {Promise<void>} settlement after the document has been re-read.
+     */
+    Controller.prototype.settle = function () {
+      var self = this
+      this.publish()
+      var reload
+      try {
+        reload = this.scope.load()
+      } catch (_reloadUnavailable) {
+        // The scope reloads on its own signals too; nothing here can improve
+        // on that, and a card stuck at "saving" would be worse than a stale
+        // revision the next conflict recovers from.
+        reload = undefined
+      }
+      return Promise.resolve(reload).catch(function () {}).then(function () {
+        self.saving = false
         self.publish()
       })
     }

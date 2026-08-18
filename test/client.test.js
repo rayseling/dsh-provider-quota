@@ -483,6 +483,11 @@ describe('save', () => {
     // scope re-reads — so a card that cleared its drafts and waited would send
     // the same `expectedRevision` twice and be refused as a conflict nobody
     // caused. This models the Host: mutate bumps the revision, load picks it up.
+    //
+    // `load` resolves on a later turn, as the real one does: it queues a read
+    // behind whatever the scope is already doing. A fake that settled
+    // synchronously would pass whether or not the save waits for it, which is
+    // the whole question here.
     const { exports } = materialize()
     const ctx = fakeContext()
     let hostRevision = 7
@@ -491,7 +496,7 @@ describe('save', () => {
     const scope = {
       getSnapshot: () => ({ status: 'ready', base: undefined, user: undefined, revision: held, writable: true, mode: 'host' }),
       subscribe: () => () => {},
-      load: () => { held = hostRevision; return Promise.resolve() },
+      load: () => new Promise((resolve) => { setImmediate(() => { held = hostRevision; resolve() }) }),
     }
     ctx.settingsScope = { bind: () => scope }
     ctx.api.settings.mutate = (payload) => {
@@ -511,6 +516,45 @@ describe('save', () => {
     await face.save()
     assert.deepEqual(sent, [7, 8], 'the second write is fenced on what the first one produced')
     assert.equal(face.hooks.codexCard.getSnapshot().failure, undefined, 'no conflict nobody caused')
+    assert.equal(face.hooks.codexCard.getSnapshot().saving, false, 'the card is free again once the read lands')
+  })
+
+  test('stays busy until the re-read lands, so a second click cannot race it', async () => {
+    // Awaiting the save is not the only way to reach the window. A card that
+    // released its button when `mutate` answered would let a fast second click
+    // in while the read was still queued, carrying the revision that write had
+    // already superseded.
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    let hostRevision = 7
+    let held = 7
+    let releaseRead = () => {}
+    const sent = []
+    const scope = {
+      getSnapshot: () => ({ status: 'ready', base: undefined, user: undefined, revision: held, writable: true, mode: 'host' }),
+      subscribe: () => () => {},
+      load: () => new Promise((resolve) => { releaseRead = () => { held = hostRevision; resolve() } }),
+    }
+    ctx.settingsScope = { bind: () => scope }
+    ctx.api.settings.mutate = (payload) => {
+      sent.push(payload.expectedRevision)
+      hostRevision += 1
+      return Promise.resolve({ result: { ok: true, value: { user: {}, revision: hostRevision } } })
+    }
+    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    face.edit('gpt-5.6-sol', '900k')
+    const first = face.save()
+    // Let `mutate` answer, but leave the queued read hanging.
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(face.hooks.codexCard.getSnapshot().saving, true, 'the write is not finished until the read is')
+    face.edit('gpt-5.5', '500k')
+    await face.save()
+    assert.deepEqual(sent, [7], 'the second click found the card still busy')
+    releaseRead()
+    await first
+    assert.equal(face.hooks.codexCard.getSnapshot().saving, false)
   })
 
   test('sends nothing when the drafts add up to no change', async () => {

@@ -236,6 +236,14 @@ describe('credential failures', { skip }, () => {
     assert.equal(error.code, 'SERVER')
   })
 
+  test('a token endpoint answering 408 is a timeout, the other retryable 4xx', async () => {
+    const home = await homeWithCredential()
+    globalThis.fetch = async () => new Response('request timeout', { status: 408 })
+    const error = await resolveOnce(adapterOver(home))
+    assert.ok(error instanceof llmModule.LlmError)
+    assert.equal(error.code, 'TIMEOUT')
+  })
+
   test('a throttled token endpoint is a rate limit', async () => {
     const home = await homeWithCredential()
     globalThis.fetch = async () => new Response('slow down', { status: 429 })
