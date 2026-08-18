@@ -9,13 +9,20 @@
  *   service takes the whole web UI down with it;
  * - the pure edit helpers, which decide what actually reaches the document.
  *
- * They need no peer dependencies, so they run in any checkout.
+ * They need no peer dependencies, so they run in any checkout — which is why
+ * the namespace below is a literal rather than an import of the host half:
+ * importing `../src/index.js` would pull pi-ai and the settings seam in behind
+ * it and make this suite fail to load wherever those are absent. The two
+ * halves are held to the same spelling from the other side instead, by an
+ * assertion in `settings.test.js`, which needs those peers anyway.
  */
 
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { describe, test } from 'node:test'
-import { settingsNs } from '../src/index.js'
+
+/** The namespace both halves must spell identically; see the note above. */
+const settingsNs = 'llm-openai-codex-lite'
 
 const source = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
 
@@ -205,6 +212,74 @@ describe('formatWindow', () => {
     const { formatWindow } = materialize().exports
     assert.equal(formatWindow(1_000_000), '1000000')
     assert.equal(formatWindow(undefined), '')
+  })
+
+  test('every window the parser accepts survives being shown and read back', () => {
+    // The pair has to be a round trip or a stored value becomes uneditable:
+    // past 2^53 `String` switches to exponent notation, which the parser
+    // refuses, so a field would show a number it then calls invalid.
+    const { parseWindow, formatWindow } = materialize().exports
+    for (const text of ['1', '272k', '1m', '9007199254740991']) {
+      const read = parseWindow(text)
+      assert.equal(read.kind, 'set', text)
+      assert.deepEqual(parseWindow(formatWindow(read.value)), read, `round trip: ${text}`)
+    }
+    assert.equal(parseWindow('9007199254740993'), undefined, 'past 2^53 the digits stop being exact')
+    assert.equal(parseWindow('1e100'), undefined)
+  })
+})
+
+describe('the model list', () => {
+  /** Drive the controller through its face, with a capturing catalog wire. */
+  function withCatalog(models) {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    let calls = 0
+    ctx.api.llm.models = () => {
+      calls++
+      return Promise.resolve(models())
+    }
+    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    return { face, calls: () => calls }
+  }
+
+  /** Let the catalog promise chain settle. */
+  const settle = () => new Promise(resolve => setImmediate(resolve))
+
+  test('offers every route model that is not already on the card', async () => {
+    const { face } = withCatalog(() => ({
+      result: { ok: true, value: { groups: [{ id: 'openai-codex', models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.6-sol' }] }] } },
+    }))
+    await settle()
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.deepEqual(state.addable, ['gpt-5.5', 'gpt-5.6-sol'])
+    assert.equal(state.catalogFailed, false)
+  })
+
+  test('a response shaped otherwise fails the picker instead of the page', async () => {
+    // The picker is the only way to add a model, so a list that never arrives
+    // must be distinguishable from having added them all. A throw inside the
+    // fulfilment handler used to escape as an unhandled rejection and leave
+    // the button reading "all added".
+    for (const value of [{ groups: 'not an array' }, { groups: [{ id: 'openai-codex', models: 'nope' }] }, {}]) {
+      const { face } = withCatalog(() => ({ result: { ok: true, value } }))
+      await settle()
+      const state = face.hooks.codexCard.getSnapshot()
+      assert.deepEqual(state.addable, [], JSON.stringify(value))
+      assert.equal(state.catalogFailed, true, JSON.stringify(value))
+    }
+  })
+
+  test('a rejected request fails the picker, and the retry asks again', async () => {
+    const { face, calls } = withCatalog(() => Promise.reject(new Error('offline')))
+    await settle()
+    assert.equal(face.hooks.codexCard.getSnapshot().catalogFailed, true)
+    assert.equal(calls(), 1)
+    face.retryCatalog()
+    await settle()
+    assert.equal(calls(), 2, 'the operator can ask again without reloading the page')
   })
 })
 
@@ -400,6 +475,42 @@ describe('save', () => {
     await face.save()
     assert.equal(calls, 0)
     assert.match(face.hooks.codexCard.getSnapshot().failure, /整数|whole number/u)
+  })
+
+  test('two saves in a row both land, because the first re-reads what it moved', async () => {
+    // A committed write advances the document's revision. The card fences its
+    // writes on the revision it holds, and that revision only changes when the
+    // scope re-reads — so a card that cleared its drafts and waited would send
+    // the same `expectedRevision` twice and be refused as a conflict nobody
+    // caused. This models the Host: mutate bumps the revision, load picks it up.
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    let hostRevision = 7
+    let held = 7
+    const sent = []
+    const scope = {
+      getSnapshot: () => ({ status: 'ready', base: undefined, user: undefined, revision: held, writable: true, mode: 'host' }),
+      subscribe: () => () => {},
+      load: () => { held = hostRevision; return Promise.resolve() },
+    }
+    ctx.settingsScope = { bind: () => scope }
+    ctx.api.settings.mutate = (payload) => {
+      sent.push(payload.expectedRevision)
+      if (payload.expectedRevision !== hostRevision) {
+        return Promise.resolve({ result: { ok: false, error: { code: 'settings-conflict', message: 'stale' } } })
+      }
+      hostRevision += 1
+      return Promise.resolve({ result: { ok: true, value: { user: {}, revision: hostRevision } } })
+    }
+    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    face.edit('gpt-5.6-sol', '900k')
+    await face.save()
+    face.edit('gpt-5.5', '500k')
+    await face.save()
+    assert.deepEqual(sent, [7, 8], 'the second write is fenced on what the first one produced')
+    assert.equal(face.hooks.codexCard.getSnapshot().failure, undefined, 'no conflict nobody caused')
   })
 
   test('sends nothing when the drafts add up to no change', async () => {

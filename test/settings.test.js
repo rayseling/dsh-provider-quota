@@ -87,6 +87,11 @@ describe('settings section', { skip }, () => {
       ctx.settings.describe().some(descriptor => descriptor.ns === plugin.settingsNs),
       `settings.describe() must list ${plugin.settingsNs}`,
     )
+    // The browser half spells this namespace as a literal, so that its own
+    // suite needs no peer dependencies. This is the other end of that pact:
+    // the card registers under the name asserted here, and a rename that
+    // touched only one half would fail here rather than in a browser.
+    assert.equal(plugin.settingsNs, 'llm-openai-codex-lite')
   })
 
   test('a stored section overrides the entry for the next request, with no restart', async () => {
@@ -133,6 +138,19 @@ describe('settings section', { skip }, () => {
     assert.equal(await windowOf(ctx), 900_000, 'the refused write leaves the route serving')
     const document = await readFile(join(home, 'settings.yaml'), 'utf8').catch(() => '')
     assert.doesNotMatch(document, /gpt-9-nonexistent/u, 'validate runs before persist')
+  })
+
+  test('a window past the exact-integer range is refused, so every stored value stays editable', async () => {
+    // Beyond 2^53 integers stop being distinguishable and `String` starts
+    // producing exponent notation, which the card's field cannot parse back —
+    // a value stored there would render as something the card calls invalid.
+    const home = await freshHome()
+    const ctx = await boot(home, { modelOverrides: { [MODEL]: { contextWindow: 900_000 } } })
+    await assert.rejects(
+      ctx.settings.update(plugin.settingsNs, { modelOverrides: { [MODEL]: { contextWindow: 1e100 } } }),
+      /9007199254740991/u,
+    )
+    assert.equal(await windowOf(ctx), 900_000)
   })
 
   test('a stored section that is already invalid leaves the route serving its entry', async () => {

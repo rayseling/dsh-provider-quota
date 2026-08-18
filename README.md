@@ -85,6 +85,8 @@ llm-openai-codex-lite:
 
 会话用到大约 **上下文长度 × 0.8** 时,较早的对话会被压缩成摘要。这个比例不属于本插件,界面里也不提供,它由 Agent 预设决定。
 
+卡片里那行"默认预设下约 xxx 时开始压缩"就是按 0.8 算的。改了下面的 `thresholdRatio` 之后,真实触发点会跟着变,而卡片仍按默认值显示——它读不到预设,所以那行字只是个方位感,不是承诺。
+
 要改的话:把一份自带预设复制到 `$DSH_HOME/.agent-presets`(自带的那份是只读的),编辑其中 `compaction-basic` 那一行:
 
 ```yaml
@@ -95,6 +97,20 @@ llm-openai-codex-lite:
 ```
 
 `compaction-basic` 支持按模型分别设置(条目里带 `provider` + `model`),所以可以只调 sol 而不动别的;`retainRatio` 默认 `0.16`,决定压缩之后留下多少。
+
+### 卡住了:`.lock` 残留
+
+刷新 token 的那一刻如果 dsh 被强杀(`kill -9`、断电),`$DSH_HOME` 里会留下一个锁文件。之后 `login` / `logout` 和每次自动刷新都会等两秒再失败,提示里带 `timed out waiting for the writer lock`。锁**不会自己过期**——文件的年龄证明不了持有者已经退出,所以没人敢替你判断。
+
+锁文件里写着持有它的进程号。先确认那个进程真的没了,再删:
+
+```sh
+LOCK="${DSH_HOME:-$HOME/.dsh}/.openai-codex-auth.json.lock"
+ps -p "$(cat "$LOCK")" || rm -f "$LOCK"        # 进程还在就别删
+rm -f "${DSH_HOME:-$HOME/.dsh}"/.openai-codex-auth.json.*.tmp
+```
+
+凭据本身不受影响:写入是先写临时文件再原子替换,所以要么是改之前的完整内容,要么是改之后的,不会是半个。
 
 ## 卸载
 
@@ -120,7 +136,7 @@ npm test
 
 `.gitignore` 里的 `node_modules` 不带尾斜杠正是为此:带斜杠的模式只匹配目录,这个软链会漏进 `git status`。
 
-`test/client.test.js` 也只依赖 Node:它把 `src/client.js` 当经典脚本执行,断言模块表契约(handoff id、只 require `react`、`inject` 为空)、卡片注册的 key、以及编辑/保存的纯函数。浏览器里跑不到的那部分——真实渲染——由下面的安装步骤人工验证。
+`test/client.test.js` 也只依赖 Node:它把 `src/client.js` 当经典脚本执行,断言模块表契约(handoff id、只 require `react` 和 `@deepseek-ai/dsh-client-ui-primitives`、`inject` 为空)、卡片注册的 key、以及编辑/保存的纯函数。为此它不 import `src/index.js`——那样会把 pi-ai 和设置层一起拖进来,裸检出里整个文件直接加载失败(不是 skip)。两边的 namespace 靠 `settings.test.js` 里的反向断言钉在一起,那份测试本来就需要 peer。浏览器里跑不到的那部分——真实渲染——由下面的安装步骤人工验证。
 
 测试从不联网:token 端点在 `globalThis.fetch` 上打桩,凭据一律写进临时 `$DSH_HOME` 并在文件跑完后删除,`login` 不在测试范围内。
 

@@ -61,7 +61,13 @@ export const settingsNs = settingsNamespace('llm-openai-codex-lite')
  */
 export const Config = z.object({
   modelOverrides: z.dict(z.object({
-    contextWindow: z.number().step(1).min(1)
+    // The ceiling is `Number.MAX_SAFE_INTEGER` rather than a guess at how
+    // large a window could plausibly get: past it, integers stop being
+    // distinguishable and `String(value)` starts producing exponent notation,
+    // so a stored value would render into the card as something the card
+    // cannot parse back. Refusing it on the way in keeps every stored window
+    // editable.
+    contextWindow: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER)
       .description('Context window in tokens. Local bookkeeping: it sizes the context meter and the compaction trigger, and never reaches the server.'),
   }).description('Catalog field replacements for this model.'))
     .default({})

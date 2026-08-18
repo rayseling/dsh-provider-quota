@@ -40,8 +40,13 @@
     /** The LLM route this plugin owns, as the model catalog groups it. */
     var OPENAI_CODEX_ROUTE = 'openai-codex'
 
-    /** The compaction trigger ratio the shipped agent presets leave at its default. */
-    var THRESHOLD_RATIO = 0.8
+    /**
+     * The fraction of the window at which the shipped agent presets start
+     * compacting. It lives in the preset, not here — a preset that sets its
+     * own ratio moves the real trigger and this card never learns of it — so
+     * the line derived from it names the assumption instead of stating a fact.
+     */
+    var DEFAULT_THRESHOLD_RATIO = 0.8
 
     // Copy for someone fluent in AI but not in this codebase: context length,
     // tokens, compaction and billing tiers are words they already own, so the
@@ -62,6 +67,7 @@
         addLabel: '添加模型',
         pick: '选择模型',
         allAdded: '已全部添加',
+        catalogFailed: '模型列表没读到,重试',
         remove: '移除',
         clear: '恢复默认',
         save: '保存',
@@ -76,7 +82,7 @@
         invalid: '请填整数;留空表示使用模型默认值。也可以写成 1m 或 272k。',
         conflict: '这项设置刚在别处被改过,已经重新读取。请确认后再保存。',
         offline: '没保存成功,连接中断了。请稍后重试。',
-        derived: '{value} tokens · 约 {trigger} 时开始压缩较早的对话',
+        derived: '{value} tokens · 默认预设下约 {trigger} 时开始压缩较早的对话',
         note: '这个数字只用于本机记账:会话能保留多少历史、什么时候开始压缩。模型真实的上下文上限不会因此变大,而且超出模型原生长度的输入会按更高的价格档计费。',
       },
       en: {
@@ -90,6 +96,7 @@
         addLabel: 'Add a model',
         pick: 'Choose a model',
         allAdded: 'All added',
+        catalogFailed: 'Model list unavailable — retry',
         remove: 'Remove',
         clear: 'Reset to default',
         save: 'Save',
@@ -104,7 +111,7 @@
         invalid: 'Enter a whole number, or leave blank to use the model default. 1m and 272k are accepted.',
         conflict: 'Someone just changed this setting elsewhere, so it has been reloaded. Check it and save again.',
         offline: 'Not saved — the connection dropped. Please try again.',
-        derived: '{value} tokens · compacts earlier turns around {trigger}',
+        derived: '{value} tokens · with the default preset, compaction starts around {trigger}',
         note: 'This number is local bookkeeping only: how much history a conversation keeps, and when compaction starts. It does not raise the model’s real context limit, and input past the model’s native length is billed at a higher tier.',
       },
     }
@@ -125,7 +132,11 @@
       if (match === null) return undefined
       var scale = match[2] === undefined ? 1 : (match[2] === 'k' || match[2] === 'K' ? 1e3 : 1e6)
       var value = Number(match[1]) * scale
-      if (!Number.isInteger(value) || value < 1) return undefined
+      // Safe, not merely integral: past 2^53 the digits stop being exact and
+      // `String(value)` switches to exponent notation, which this very parser
+      // rejects — so accepting one would write a value the field could never
+      // show back. The host schema refuses the same range.
+      if (!Number.isSafeInteger(value) || value < 1) return undefined
       return { kind: 'set', value: value }
     }
 
@@ -220,7 +231,7 @@
         lines.push({
           text: text.derived
             .replace('{value}', groupDigits(row.value))
-            .replace('{trigger}', groupDigits(Math.floor(row.value * THRESHOLD_RATIO))),
+            .replace('{trigger}', groupDigits(Math.floor(row.value * DEFAULT_THRESHOLD_RATIO))),
         })
       }
       if (row.source === 'base') lines.push({ text: text.baseHint })
@@ -308,6 +319,7 @@
       this.locale = locale
       this.drafts = {}
       this.catalog = []
+      this.catalogState = 'idle'
       this.failure = undefined
       this.saving = false
       this.store = createStore(this.project())
@@ -317,6 +329,7 @@
         resetRow: function (model) { self.edit(model, '') },
         removeRow: function (model) { self.removeRow(model) },
         addRow: function (model) { self.addRow(model) },
+        retryCatalog: function () { self.loadCatalog() },
         save: function () { return self.save() },
         discard: function () { self.discard() },
       }
@@ -344,6 +357,7 @@
         language: this.language(),
         rows: rows,
         addable: this.catalog.filter(function (id) { return known[id] !== true }),
+        catalogFailed: this.catalogState === 'failed',
         dirty: Object.keys(this.drafts).length > 0,
         invalid: rows.some(function (row) { return row.invalid }),
         saving: this.saving,
@@ -382,41 +396,67 @@
     /**
      * Load the catalog's model ids, so the add row can offer them.
      *
-     * Best effort: an unreachable catalog only costs the add row its
-     * suggestions, since the free-text field still reaches every model and the
-     * host half refuses an unknown id with a message naming all of them. It is
-     * still reported, because a suggestion list that is quietly always empty
-     * looks like a feature nobody built rather than a call that failed.
+     * The picker offers these ids and nothing else, so a catalog that does not
+     * arrive is not a missing convenience but a picker with nothing in it —
+     * indistinguishable, without this state, from having already added every
+     * model. It therefore fails loudly enough to be retried, and the button
+     * says which of the two happened.
      */
     Controller.prototype.loadCatalog = function () {
       var self = this
+      if (this.catalogState === 'loading') return
+      this.catalogState = 'loading'
+      this.publish()
       var request
       try {
         request = this.api.llm.models({})
       } catch (error) {
-        console.warn('[dsh-codex-lite] model catalog unavailable:', error)
+        this.failCatalog('unavailable', error)
         return
       }
+      // `.catch` rather than a second `then` argument: a rejection handler
+      // passed beside the fulfilment handler cannot see what that handler
+      // throws, and everything below unwraps a response this card does not
+      // control. A shape it did not expect would otherwise leave the picker
+      // stuck on "loading" and the failure only in the console.
       Promise.resolve(request).then(function (response) {
         var result = response === undefined ? undefined : response.result
         if (result === undefined || !result.ok) {
-          console.warn('[dsh-codex-lite] model catalog refused:', result && result.error)
+          self.failCatalog('refused', result && result.error)
           return
         }
-        var groups = (result.value && result.value.groups) || []
+        var groups = result.value && result.value.groups
         var group
-        for (var index = 0; index < groups.length; index++) {
-          if (groups[index].id === OPENAI_CODEX_ROUTE) group = groups[index]
+        if (Array.isArray(groups)) {
+          for (var index = 0; index < groups.length; index++) {
+            if (groups[index] && groups[index].id === OPENAI_CODEX_ROUTE) group = groups[index]
+          }
         }
-        if (group === undefined) {
-          console.warn('[dsh-codex-lite] model catalog carries no ' + OPENAI_CODEX_ROUTE + ' group')
+        var models = group === undefined ? undefined : group.models
+        if (!Array.isArray(models)) {
+          self.failCatalog('carries no ' + OPENAI_CODEX_ROUTE + ' models', groups)
           return
         }
-        self.catalog = (group.models || []).map(function (model) { return model.id })
+        self.catalog = models
+          .map(function (model) { return model === null || typeof model !== 'object' ? undefined : model.id })
+          .filter(function (id) { return typeof id === 'string' && id.length > 0 })
+        self.catalogState = 'ready'
         self.publish()
-      }, function (error) {
-        console.warn('[dsh-codex-lite] model catalog request failed:', error)
+      }).catch(function (error) {
+        self.failCatalog('request failed', error)
       })
+    }
+
+    /**
+     * Record that the model list did not arrive, and say so once in the
+     * console for whoever is looking at one.
+     * @param {string} reason - what went wrong, for the console line.
+     * @param {unknown} detail - the underlying value, for the console line.
+     */
+    Controller.prototype.failCatalog = function (reason, detail) {
+      console.warn('[dsh-codex-lite] model catalog ' + reason + ':', detail)
+      this.catalogState = 'failed'
+      this.publish()
     }
 
     Controller.prototype.save = function () {
@@ -452,10 +492,15 @@
           self.failure = error === undefined
             ? text.offline
             : error.code === 'settings-conflict' ? text.conflict : error.message
-          // Re-read either way: a conflict means the document moved, and a
-          // refusal is worth showing against current values.
-          try { void self.scope.load() } catch (_reloadUnavailable) { /* the scope reloads on its own signals too */ }
         }
+        // Re-read on every outcome, success included. A write this card made
+        // advances the document's revision, and the revision it holds comes
+        // from a forwarded `settings/document-updated` event that arrives on
+        // its own schedule — so a second save issued before that event lands
+        // would carry a stale `expectedRevision` and be refused as a conflict
+        // nobody caused. A conflict means the document moved under us, and a
+        // refusal is worth showing against current values.
+        try { void self.scope.load() } catch (_reloadUnavailable) { /* the scope reloads on its own signals too */ }
         self.publish()
       }, function () {
         self.saving = false
@@ -530,7 +575,12 @@
           }))
       })
 
+      // Three states, because an empty picker has two very different causes:
+      // every model is already on the card, or the list never arrived. The
+      // second is the one the operator can act on, so it says so and the
+      // button retries instead of opening an empty menu.
       var addable = state.addable
+      var catalogFailed = state.catalogFailed === true && addable.length === 0
       var addField = h('div', { className: 'dcl-field' },
         h('div', { className: 'dcl-head' },
           h('span', { className: 'dcl-label' }, text.addLabel),
@@ -544,11 +594,14 @@
             anchor: h('button', {
               type: 'button',
               className: 'dcl-selector',
-              'aria-haspopup': 'menu',
-              'aria-expanded': isPicking,
-              disabled: busy || addable.length === 0,
-              onClick: function () { setPicking(!isPicking) },
-            }, addable.length === 0 ? text.allAdded : text.pick,
+              'aria-haspopup': catalogFailed ? undefined : 'menu',
+              'aria-expanded': catalogFailed ? undefined : isPicking,
+              disabled: busy || (!catalogFailed && addable.length === 0),
+              onClick: function () {
+                if (catalogFailed) props.retryCatalog()
+                else setPicking(!isPicking)
+              },
+            }, catalogFailed ? text.catalogFailed : addable.length === 0 ? text.allAdded : text.pick,
             h(ChevronIcon, { className: 'dcl-chevron' })),
           })))
 
