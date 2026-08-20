@@ -519,6 +519,70 @@ describe('save', () => {
     assert.equal(face.hooks.codexCard.getSnapshot().saving, false, 'the card is free again once the read lands')
   })
 
+  test('folds the write answer on a host whose scope cannot be told to re-read', async () => {
+    // Newer hosts deleted `scope.load()` and made the settings mirror shared:
+    // the answer to a write IS the namespace's new view, folded straight in
+    // with no wire read. A card that only knew how to re-read would find its
+    // `load` missing, silently do nothing, and send the superseded revision on
+    // the very next save — the exact conflict this card exists to avoid.
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    let hostRevision = 7
+    let held = 7
+    const sent = []
+    const folded = []
+    // No `load` on this scope, as the newer host has none.
+    const scope = {
+      getSnapshot: () => ({ status: 'ready', base: undefined, user: undefined, revision: held, writable: true, mode: 'host' }),
+      subscribe: () => () => {},
+    }
+    const mirror = {
+      acceptView: (view) => { folded.push(view.revision); held = view.revision },
+    }
+    ctx.settingsScope = { bind: () => scope, describe: () => mirror }
+    ctx.api.settings.mutate = (payload) => {
+      sent.push(payload.expectedRevision)
+      if (payload.expectedRevision !== hostRevision) {
+        return Promise.resolve({ result: { ok: false, error: { code: 'settings-conflict', message: 'stale' } } })
+      }
+      hostRevision += 1
+      return Promise.resolve({ result: { ok: true, value: { ns: 'llm-openai-codex-lite', user: {}, revision: hostRevision } } })
+    }
+    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    face.edit('gpt-5.6-sol', '900k')
+    await face.save()
+    face.edit('gpt-5.5', '500k')
+    await face.save()
+    assert.deepEqual(folded, [8, 9], 'each answer is folded, not fetched back')
+    assert.deepEqual(sent, [7, 8], 'the second write is fenced on what the first one produced')
+    assert.equal(face.hooks.codexCard.getSnapshot().failure, undefined, 'no conflict nobody caused')
+  })
+
+  test('survives a host that offers neither a re-read nor a mirror', async () => {
+    // Between the two host shapes there is no third, but the card must not
+    // depend on that: a missing `load` and a missing `describe` together are
+    // the degenerate case, and it may cost a stale revision, never a throw.
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    const scope = {
+      getSnapshot: () => ({ status: 'ready', base: undefined, user: undefined, revision: 7, writable: true, mode: 'host' }),
+      subscribe: () => () => {},
+    }
+    ctx.settingsScope = { bind: () => scope }
+    ctx.api.settings.mutate = () => Promise.resolve({ result: { ok: true, value: { user: {}, revision: 8 } } })
+    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    face.edit('gpt-5.6-sol', '900k')
+    await face.save()
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.equal(state.failure, undefined)
+    assert.equal(state.saving, false, 'the card is released even with nothing to wait on')
+    assert.equal(state.dirty, false)
+  })
+
   test('stays busy until the re-read lands, so a second click cannot race it', async () => {
     // Awaiting the save is not the only way to reach the window. A card that
     // released its button when `mutate` answered would let a fast second click

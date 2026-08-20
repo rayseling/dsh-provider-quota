@@ -312,11 +312,13 @@
      * @param {object} api - the connection's wire face.
      * @param {object|undefined} locale - the locale service, when one is mounted.
      */
-    function Controller(scope, api, locale) {
+    function Controller(scope, api, locale, mirror) {
       var self = this
       this.scope = scope
       this.api = api
       this.locale = locale
+      // The host's shared settings mirror, where one exists. See `settle`.
+      this.mirror = mirror
       this.drafts = {}
       this.catalog = []
       this.catalogState = 'idle'
@@ -481,6 +483,18 @@
       if (snapshot.revision !== undefined) payload.expectedRevision = snapshot.revision
       return Promise.resolve(this.api.settings.mutate(payload)).then(function (response) {
         if (response !== undefined && response.result !== undefined && response.result.ok) {
+          // The answer to a settings write IS the namespace's new view, so the
+          // host folds it straight into its shared mirror rather than paying
+          // for a read that would only fetch back what it was just told. Doing
+          // the same here is what advances the revision this card fences on —
+          // synchronously, before the next save can be issued.
+          try {
+            if (self.mirror !== undefined) self.mirror.acceptView(response.result.value)
+          } catch (_foldRefused) {
+            // The host forwards a document-updated signal for every committed
+            // write; the mirror repairs itself from that even if this fold was
+            // refused, one round trip later than it needed to be.
+          }
           self.drafts = {}
           self.failure = undefined
         } else {
@@ -503,33 +517,37 @@
      * End one save: show what the write produced, re-read the document, and
      * only then let the card accept another write.
      *
-     * Re-reading is what keeps the revision this card fences on level with the
-     * document it just moved — the scope learns the new revision from a read,
-     * not from the `mutate` response, and the forwarded
-     * `settings/document-updated` event arrives on its own schedule. But
-     * re-reading is asynchronous and queued, so releasing the card the moment
-     * `mutate` answers would reopen the same race one layer down: a second
-     * write issued inside that window still carries the superseded revision
-     * and is refused as a conflict nobody caused.
+     * Making the document current again is what keeps the revision this card
+     * fences on level with the document it just moved. Leave it stale and the
+     * next save carries a superseded `expectedRevision` and is refused as a
+     * conflict nobody caused.
      *
-     * So `saving` stays raised until the read settles, and the promise this
-     * returns — the one `save()` hands back — settles with it. That holds both
-     * doors: the button stays busy, and a caller that awaits a save sees a
-     * card ready for the next one. The wait is unbounded, like the wait on
-     * `mutate` above it, because both ride the same wire: a connection that
-     * strands one strands the other, and the card already says so.
-     * @returns {Promise<void>} settlement after the document has been re-read.
+     * Two hosts do that two ways. A host with a shared settings mirror has
+     * already been handed the new view by `save`, synchronously, so there is
+     * nothing left to wait for. A host without one exposes `scope.load()`, an
+     * asynchronous queued read — and there, releasing the card the moment
+     * `mutate` answers would reopen the race one layer down, because the
+     * revision only moves when that read lands.
+     *
+     * So `saving` stays raised until whatever this host needed has finished,
+     * and the promise this returns — the one `save()` hands back — settles
+     * with it. That holds both doors: the button stays busy, and a caller that
+     * awaits a save sees a card ready for the next one. Where a read is
+     * involved the wait is unbounded, like the wait on `mutate` above it,
+     * because both ride the same wire: a connection that strands one strands
+     * the other, and the card already says so.
+     * @returns {Promise<void>} settlement once the document is current again.
      */
     Controller.prototype.settle = function () {
       var self = this
       this.publish()
       var reload
       try {
-        reload = this.scope.load()
+        reload = typeof this.scope.load === 'function' ? this.scope.load() : undefined
       } catch (_reloadUnavailable) {
-        // The scope reloads on its own signals too; nothing here can improve
-        // on that, and a card stuck at "saving" would be worse than a stale
-        // revision the next conflict recovers from.
+        // Nothing here can improve on the host's own signals, and a card stuck
+        // at "saving" would be worse than a stale revision the next conflict
+        // recovers from.
         reload = undefined
       }
       return Promise.resolve(reload).catch(function () {}).then(function () {
@@ -752,7 +770,13 @@
       ensureStyles()
       var connection = ctx.get('connection')
       var scope = ctx.settingsScope.bind({ namespace: SETTINGS_NS, decode: decodeSection })
-      var controller = new Controller(scope, connection.api, localeOf(ctx))
+      // Optional on purpose: hosts that predate the shared mirror have no
+      // `describe`, and the card must keep working on those. See `settle`.
+      var mirror
+      try {
+        mirror = typeof ctx.settingsScope.describe === 'function' ? ctx.settingsScope.describe() : undefined
+      } catch (_noDescribeFace) { mirror = undefined }
+      var controller = new Controller(scope, connection.api, localeOf(ctx), mirror)
       ctx.effect(function () {
         var disposers = [scope.subscribe(function () { controller.publish() })]
         if (controller.locale !== undefined) {

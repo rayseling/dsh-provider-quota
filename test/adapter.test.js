@@ -112,6 +112,21 @@ describe('catalog sizing', { skip }, () => {
     assert.equal('defaultMaxTokens' in info, false)
   })
 
+  test('the route publishes a request image ceiling, so an image session stays evictable', async () => {
+    // The adapter drops the oldest images once a request's base64 payload
+    // passes this, and a profile without the field disables that entirely —
+    // silently, since the field is only load-bearing once a session is long
+    // and image-heavy. The gateway answers such a request with a payload-too-
+    // large the seam classifies INVALID_REQUEST and never retries.
+    //
+    // The exact number is the host's own default for its pi-ai routes, copied
+    // rather than imported because that package does not export it. This pins
+    // only that a usable ceiling exists; drift in the value is a comment's job.
+    const profile = adapterOver(await freshHome()).config.profiles().get('openai-codex')
+    assert.ok(Number.isSafeInteger(profile.maxRequestImageBytes), 'the field must be present')
+    assert.ok(profile.maxRequestImageBytes > 0)
+  })
+
   test('an unconfigured route keeps the installed catalog', async () => {
     const adapter = adapterOver(await homeWithCredential())
     const models = await adapter.listModels('openai-codex')

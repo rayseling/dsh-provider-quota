@@ -33,6 +33,22 @@ import { OPENAI_CODEX_PROVIDER } from './store.js'
 const STREAM_IDLE_TIMEOUT_MS = 300_000
 
 /**
+ * Ceiling on one request's base64 image payload, above which the adapter
+ * replaces the oldest images with text placeholders until the request fits.
+ *
+ * Every Codex model but the spark one accepts images, and this plugin does
+ * wire up the attachment store, so an image-heavy session accumulates until
+ * the gateway refuses the request — as a payload-too-large the seam classifies
+ * `INVALID_REQUEST` and never retries, which ends the turn outright.
+ *
+ * The number matches the host's own default for the pi-ai routes it composes.
+ * It is written out rather than imported because that package does not export
+ * it, so this is a copy that can drift; a profile without the field disables
+ * the eviction entirely, which is the one outcome worth avoiding.
+ */
+const MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024
+
+/**
  * Ceiling for one credential resolution, refresh included. Reaching it fails
  * the request as a retryable timeout rather than leaving the turn suspended in
  * a phase the harness cannot cancel.
@@ -89,9 +105,9 @@ const REFRESH_STATUS = /OpenAI Codex token (?:refresh|exchange) failed \((\d{3})
 /**
  * Classify a credential failure into the seam's retry taxonomy.
  *
- * The default retry policy retries `RATE_LIMIT`, `SERVER`, `TIMEOUT` and
- * `TRANSPORT` and nothing else, so this function decides whether a failure
- * ends the turn. Only a failure that says the grant itself is bad deserves
+ * The default retry policy retries `EMPTY_RESPONSE`, `RATE_LIMIT`, `SERVER`,
+ * `TIMEOUT` and `TRANSPORT` and nothing else, so this function decides whether
+ * a failure ends the turn. Only a failure that says the grant itself is bad deserves
  * `AUTH`: it is the one answer that sends the operator to `login`, and
  * spending it on a dropped packet teaches them to re-authenticate for a
  * problem re-authenticating cannot fix.
@@ -297,6 +313,7 @@ export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOve
     provider: OPENAI_CODEX_PROVIDER,
     displayName: 'OpenAI Codex',
     streamIdleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+    maxRequestImageBytes: MAX_REQUEST_IMAGE_BYTES,
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-codex-lite retryPolicy'),
     configuredMaxTokens: new Map(),
   })
