@@ -15,6 +15,8 @@
 
 ## 安装
 
+需要 **dsh 0.1.0-rc.8 或更新**。卡片保存后靠宿主的共享 settings mirror 把写入应答折回来推进 revision,rc.8 之前没有这个东西;宿主半侧(模型路由、登录、凭据存储)不受影响,更老的 dsh 上只是卡片不出现。
+
 ```sh
 dsh plugin --profile web add file:/你克隆到的路径/dsh-codex-lite
 ```

@@ -3,11 +3,18 @@
  * configuration, editing the per-model context window this plugin's settings
  * namespace owns.
  *
- * The harness ships no generic schema-form renderer — the plugin-configuration
- * tab is a card registry keyed by settings namespace, and a namespace no card
- * claims renders nothing. So this file is the card, hand-written as a classic
- * script: no bundler, no JSX, and `react` is the only module it asks the
- * client module table for. Everything else it needs is a cordis service.
+ * The harness ships no generic schema-form renderer — the package that once
+ * held one is gone, and the plugin-configuration tab is a card registry keyed
+ * by settings namespace, where a namespace no card claims renders nothing. So
+ * this file is the card, hand-written as a classic script: no bundler, no JSX,
+ * and the only modules it asks the client module table for are `react` and the
+ * shipped UI primitives. Everything else it needs is a cordis service.
+ *
+ * It writes through `settings.mutate` rather than the scope's own setters,
+ * because one card save has to be one atomic write, and folds the answer into
+ * the shared describe mirror the way the scope's setters do — which is what
+ * moves the revision the next write fences on. That mirror is the one thing
+ * here that a harness older than 0.1.0-rc.8 does not have.
  *
  * Two failure modes here would take the whole web UI down with them, so both
  * are designed out rather than handled: the module declares no `inject`, and
@@ -317,7 +324,8 @@
       this.scope = scope
       this.api = api
       this.locale = locale
-      // The host's shared settings mirror, where one exists. See `settle`.
+      // The shared describe mirror. `save` folds each write answer into it,
+      // which is what advances the revision the next write fences on.
       this.mirror = mirror
       this.drafts = {}
       this.catalog = []
@@ -484,16 +492,23 @@
       return Promise.resolve(this.api.settings.mutate(payload)).then(function (response) {
         if (response !== undefined && response.result !== undefined && response.result.ok) {
           // The answer to a settings write IS the namespace's new view, so the
-          // host folds it straight into its shared mirror rather than paying
-          // for a read that would only fetch back what it was just told. Doing
-          // the same here is what advances the revision this card fences on —
-          // synchronously, before the next save can be issued.
+          // Host folds it into the shared mirror rather than paying for a read
+          // that would only fetch back what it was just told. Doing the same
+          // here is what advances the revision this card fences on. It lands
+          // synchronously — the mirror notifies without batching and the scope
+          // derives in that notification — so by the line below, the next save
+          // already fences on what this one produced, and there is no window
+          // between answering and being current for a second write to fall
+          // into. A refusal needs no fold: a rejected write moved nothing, and
+          // a conflict means someone else moved it, which reaches the mirror
+          // as the Host's own document-updated signal.
           try {
-            if (self.mirror !== undefined) self.mirror.acceptView(response.result.value)
+            self.mirror.acceptView(response.result.value)
           } catch (_foldRefused) {
-            // The host forwards a document-updated signal for every committed
-            // write; the mirror repairs itself from that even if this fold was
-            // refused, one round trip later than it needed to be.
+            // Not this card's to repair: the same signal arrives for every
+            // committed write, so the mirror still converges — one round trip
+            // later than it needed to. Swallowing keeps a Host-side throw from
+            // stranding the card mid-save.
           }
           self.drafts = {}
           self.failure = undefined
@@ -506,52 +521,11 @@
             ? text.offline
             : error.code === 'settings-conflict' ? text.conflict : error.message
         }
-        return self.settle()
-      }, function () {
-        self.failure = text.offline
-        return self.settle()
-      })
-    }
-
-    /**
-     * End one save: show what the write produced, re-read the document, and
-     * only then let the card accept another write.
-     *
-     * Making the document current again is what keeps the revision this card
-     * fences on level with the document it just moved. Leave it stale and the
-     * next save carries a superseded `expectedRevision` and is refused as a
-     * conflict nobody caused.
-     *
-     * Two hosts do that two ways. A host with a shared settings mirror has
-     * already been handed the new view by `save`, synchronously, so there is
-     * nothing left to wait for. A host without one exposes `scope.load()`, an
-     * asynchronous queued read — and there, releasing the card the moment
-     * `mutate` answers would reopen the race one layer down, because the
-     * revision only moves when that read lands.
-     *
-     * So `saving` stays raised until whatever this host needed has finished,
-     * and the promise this returns — the one `save()` hands back — settles
-     * with it. That holds both doors: the button stays busy, and a caller that
-     * awaits a save sees a card ready for the next one. Where a read is
-     * involved the wait is unbounded, like the wait on `mutate` above it,
-     * because both ride the same wire: a connection that strands one strands
-     * the other, and the card already says so.
-     * @returns {Promise<void>} settlement once the document is current again.
-     */
-    Controller.prototype.settle = function () {
-      var self = this
-      this.publish()
-      var reload
-      try {
-        reload = typeof this.scope.load === 'function' ? this.scope.load() : undefined
-      } catch (_reloadUnavailable) {
-        // Nothing here can improve on the host's own signals, and a card stuck
-        // at "saving" would be worse than a stale revision the next conflict
-        // recovers from.
-        reload = undefined
-      }
-      return Promise.resolve(reload).catch(function () {}).then(function () {
         self.saving = false
+        self.publish()
+      }, function () {
+        self.saving = false
+        self.failure = text.offline
         self.publish()
       })
     }
@@ -770,13 +744,10 @@
       ensureStyles()
       var connection = ctx.get('connection')
       var scope = ctx.settingsScope.bind({ namespace: SETTINGS_NS, decode: decodeSection })
-      // Optional on purpose: hosts that predate the shared mirror have no
-      // `describe`, and the card must keep working on those. See `settle`.
-      var mirror
-      try {
-        mirror = typeof ctx.settingsScope.describe === 'function' ? ctx.settingsScope.describe() : undefined
-      } catch (_noDescribeFace) { mirror = undefined }
-      var controller = new Controller(scope, connection.api, localeOf(ctx), mirror)
+      // The shared describe mirror, which this card folds its write answers
+      // into. Not defended here: `mount` runs inside `apply`'s try/catch, so a
+      // Host without it costs this card and nothing else.
+      var controller = new Controller(scope, connection.api, localeOf(ctx), ctx.settingsScope.describe())
       ctx.effect(function () {
         var disposers = [scope.subscribe(function () { controller.publish() })]
         if (controller.locale !== undefined) {
