@@ -23,9 +23,11 @@ const loaded = await Promise.all([
   import('@deepseek-ai/dsh-llm'),
   import('@deepseek-ai/dsh-settings-file'),
   import('../src/index.js'),
+  import('@deepseek-ai/dsh-settings'),
+  import('@deepseek-ai/schemastery'),
 ]).then(modules => ({ modules }), error => ({ error }))
 const skip = loaded.error === undefined ? false : `peer dependencies are not installed (${loaded.error.code ?? 'import failed'})`
-const [cordis, llm, settingsFile, plugin] = loaded.modules ?? []
+const [cordis, llm, settingsFile, plugin, settings, schemastery] = loaded.modules ?? []
 
 const MODEL = 'gpt-5.6-sol'
 const CATALOG_WINDOW = 272_000
@@ -57,6 +59,7 @@ async function boot(home, config, options = {}) {
   disposers.push(() => ctx.fiber.dispose())
   await ctx.plugin(llm.LlmRuntime)
   if (options.connection !== undefined) ctx.provide('connection', options.connection)
+  if (options.credentials !== undefined) ctx.provide('credentials', options.credentials)
   if (options.settings !== false) {
     await ctx.plugin(settingsFile.FileSettingsProvider, { path: join(home, 'settings.yaml'), watch: false })
   }
@@ -110,6 +113,57 @@ describe('settings section', { skip }, () => {
     assert.equal(registered.channel, '/dsh-codex-lite')
     assert.equal(typeof registered.handler, 'function')
     assert.deepEqual(registered.options, { authority: 'trusted-host' })
+  })
+
+  test('the native DeepSeek route is read from its flat section, not through a providers dict', async () => {
+    // The two DeepSeek routes this plugin answers for keep their configuration
+    // in differently shaped sections: the pi-ai one nests profiles under
+    // `providers` keyed by route, while llm-deepseek registers itself at
+    // `settingsPath: []` and puts `apiKeyEnv`/`baseURL` at its own root.
+    // Reading the native one through `providers` finds nothing and quietly
+    // falls back to the defaults — which would send a key provisioned for a
+    // private endpoint to the public one. So this configures both fields away
+    // from their defaults and pins where the request actually goes.
+    //
+    // It doubles as the regression test for `readSection` reaching the section
+    // at all: `ctx.settings` throws for a service this plugin never injects,
+    // and the catch around it turned that into "nothing configured" for every
+    // route at once.
+    const home = await freshHome()
+    let registered
+    const connection = { rpc: { handle(channel, handler) { registered = handler; return async () => {} } } }
+    const credentials = {
+      resolve: async ref => (String(ref) === 'DEEPSEEK_PRIVATE_KEY' ? { value: 'sk-private' } : undefined),
+      readRecord: async () => undefined,
+    }
+    const ctx = await boot(home, {}, { connection, credentials })
+    // Stand in for the native adapter's own section, with the shape it
+    // installs: flat, `settingsPath: []`, no `providers` above the fields.
+    const z = schemastery.default ?? schemastery
+    ctx.settings.register(
+      settings.settingsNamespace('llm-deepseek'),
+      z.object({ apiKeyEnv: z.string(), baseURL: z.string() }),
+      { base: { apiKeyEnv: 'DEEPSEEK_PRIVATE_KEY', baseURL: 'https://deepseek.internal.example/v1/' } },
+    )
+    const calls = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), auth: init?.headers?.Authorization })
+      return new Response(JSON.stringify({ is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '10.00' }] }),
+        { headers: { 'content-type': 'application/json' } })
+    }
+    try {
+      const answer = await registered('usage', { provider: 'deepseek-official' }, new AbortController().signal)
+      assert.equal(answer.ok, true, `expected a balance, got ${JSON.stringify(answer)}`)
+      assert.equal(calls.length, 1)
+      assert.equal(calls[0].url, 'https://deepseek.internal.example/v1/user/balance',
+        'the configured baseURL must be where the balance is read, trailing slash trimmed')
+      assert.equal(calls[0].auth, 'Bearer sk-private',
+        'the key must come from the configured apiKeyEnv, not the default one')
+      assert.equal(JSON.stringify(answer).includes('sk-private'), false, 'no key may reach the browser')
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 
   test('a stored section overrides the entry for the next request, with no restart', async () => {

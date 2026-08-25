@@ -125,8 +125,15 @@ const NO_OVERRIDES = Object.freeze({})
  */
 function readSection(ctx, ns) {
   try {
-    var settings = ctx.settings !== undefined ? ctx.settings : ctx.get('settings')
-    if (settings === undefined) return undefined
+    // `ctx.get(name)` and not `ctx.settings`: this plugin injects only `llm`,
+    // and the property accessor refuses a service the fiber never declared —
+    // it throws `cannot get property "settings" without inject` before the
+    // fallback beside it can run. The catch below then turns that into
+    // "nothing configured" for every route, silently, so every API-key route
+    // would read its endpoint and credential reference from the defaults
+    // instead of from the section the operator actually wrote.
+    var settings = ctx.get('settings')
+    if (settings === undefined || settings === null) return undefined
     return settings.get(ns)
   } catch (_sectionUnavailable) {
     return undefined
@@ -250,8 +257,18 @@ export function apply(ctx, config) {
       return { kind: 'opencode', endpoint, apiKey: key }
     }
     if (provider === 'deepseek-official' || provider === 'deepseek') {
-      const section = provider === 'deepseek-official' ? nativeSection() : piSection()
-      const profile = section === undefined ? undefined : section.providers?.['deepseek']
+      // Two section shapes, not one. The pi-ai section keys a profile dict by
+      // route, so `deepseek` there is `providers.deepseek`; the native
+      // llm-deepseek section is flat — it registers itself at `settingsPath:
+      // []`, so `apiKeyEnv` and `baseURL` sit at its root with no `providers`
+      // above them. Reading the native one through `providers` finds nothing
+      // and silently falls back to the defaults, which sends a key configured
+      // for a private endpoint to the public one.
+      const isNative = provider === 'deepseek-official'
+      const section = isNative ? nativeSection() : piSection()
+      const profile = section === undefined
+        ? undefined
+        : isNative ? section : section.providers?.['deepseek']
       const isProfile = profile !== null && typeof profile === 'object'
       const envName = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
         ? profile.apiKeyEnv : 'DEEPSEEK_API_KEY'
