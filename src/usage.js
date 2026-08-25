@@ -35,6 +35,8 @@ export const DEEPSEEK_PUBLIC_BASE_URL = 'https://api.deepseek.com'
 /** Harness Connection RPC channel and method consumed by the browser card. */
 export const OPENAI_CODEX_USAGE_CHANNEL = '/dsh-codex-lite'
 export const OPENAI_CODEX_USAGE_METHOD = 'usage'
+/** Read-only method returning the unfiltered installed Codex catalog to Settings. */
+export const OPENAI_CODEX_CATALOG_METHOD = 'catalog'
 
 const WEEK_SECONDS = 7 * 24 * 60 * 60
 const WINDOW_TOLERANCE = 0.05
@@ -736,10 +738,27 @@ export function createProviderUsageService(options) {
 }
 
 /**
- * The strict request payload: an optional provider (absent means openai-codex,
- * so pages loaded before this plugin version keep working) and an optional
- * force flag. Anything else is refused.
- * @param {unknown} payload @returns {payload is {provider?: string, force?: boolean}} */
+ * The catalog request carries nothing at all, so anything in it is a caller
+ * this endpoint does not know how to answer.
+ * @param {unknown} payload - decoded RPC payload.
+ * @returns {boolean} whether the catalog request is exactly empty.
+ */
+function isCatalogRequest(payload) {
+  return isRecord(payload) && Object.keys(payload).length === 0
+}
+
+/**
+ * The strict usage request payload: an optional provider and an optional force
+ * flag, and nothing else.
+ *
+ * An absent `provider` is not a default so much as a version marker — it is
+ * what a page loaded before this plugin learned about the other two routes
+ * sends, and {@link createProviderUsageRpc} answers those in the codex-only
+ * shape that client knows how to read, so a stale tab keeps working until it
+ * reloads.
+ * @param {unknown} payload - decoded RPC payload.
+ * @returns {payload is {provider?: string, force?: boolean}} whether it is answerable.
+ */
 function isProviderUsageRequest(payload) {
   if (!isRecord(payload) || Object.keys(payload).some(function (key) { return key !== 'provider' && key !== 'force' })) return false
   if (payload.provider !== undefined) {
@@ -766,10 +785,20 @@ function legacyCodexValue(value) {
  * Build the provider-aware Handler for Harness Connection RPC. Connection owns
  * the Host/Origin/fetch-site trust fence before this function can run.
  * @param {{get(provider?: string, force?: boolean, signal?: AbortSignal): Promise<object>}} service
+ * @param {readonly string[]} [catalogIds] - complete installed catalog for the Settings card.
  * @returns {(endpoint: string, payload: unknown, signal: AbortSignal) => Promise<object>}
  */
-export function createProviderUsageRpc(service) {
+export function createProviderUsageRpc(service, catalogIds = []) {
   return async (endpoint, payload, signal) => {
+    if (endpoint === OPENAI_CODEX_CATALOG_METHOD) {
+      if (!isCatalogRequest(payload)) {
+        return { ok: false, error: { code: 'invalid-request', message: 'Invalid catalog request' } }
+      }
+      if (signal.aborted) {
+        return { ok: false, error: { code: 'aborted', message: 'catalog request was cancelled' } }
+      }
+      return { ok: true, value: { models: [...catalogIds] } }
+    }
     if (endpoint !== OPENAI_CODEX_USAGE_METHOD) {
       return { ok: false, error: { code: 'method-not-found', message: 'Unknown usage method' } }
     }

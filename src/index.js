@@ -52,6 +52,7 @@ export {
   normalizeDeepSeekBalance,
   normalizeOpencodeGoUsage,
   normalizeOpenAICodexUsage,
+  OPENAI_CODEX_CATALOG_METHOD,
   OPENAI_CODEX_USAGE_CHANNEL,
   OPENAI_CODEX_USAGE_METHOD,
   OPENAI_CODEX_USAGE_URL,
@@ -289,7 +290,7 @@ export function apply(ctx, config) {
   ctx.inject(['connection'], (connectionCtx) => {
     connectionCtx.connection.rpc.handle(
       OPENAI_CODEX_USAGE_CHANNEL,
-      createProviderUsageRpc(usage),
+      createProviderUsageRpc(usage, catalogIds),
       { authority: 'trusted-host' },
     )
   })

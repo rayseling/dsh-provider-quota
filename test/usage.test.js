@@ -361,6 +361,12 @@ describe('provider usage service and RPC', () => {
       weekly: { usedPercent: 3, remainingPercent: 97, windowSeconds: WEEK, resetsAt: 1_788_134_407 },
       fetchedAt: '2026-08-20T12:00:00.000Z',
     })
+    const catalogRpc = createProviderUsageRpc(service, ['gpt-5.5', 'gpt-5.6-sol'])
+    assert.deepEqual(await catalogRpc('catalog', {}, signal), {
+      ok: true,
+      value: { models: ['gpt-5.5', 'gpt-5.6-sol'] },
+    })
+    assert.equal((await catalogRpc('catalog', { extra: true }, signal)).error.code, 'invalid-request')
   })
 
   test('the RPC publishes only a stable failure code when the router throws', async () => {
