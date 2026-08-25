@@ -13,7 +13,7 @@
 | 消息/流转换、附件、重试、reasoning 元数据 | dsh 官方 `PiAiAdapter`(`@deepseek-ai/dsh-llm-pi-ai` 公开导出) |
 | 本插件自己写的 | 一个 0600 权限的凭据文件存储 + 终端登录命令 + 一个把 OAuth token 作为请求级 bearer 交给官方适配器的桥(含凭据解析的单飞与超时护栏)+ 一个 token 脱敏器 + 一个把三个上游的额度/余额归一成同一个 union 的 Connection RPC(只出标准化数据,凭据一律留在主机)+ 一张 Settings 卡片和一个会话头部额度胶囊(手写的经典脚本,无打包步骤) |
 
-**刻意不做的**(相对 dsh-codex):不接管 web 搜索、无 imagegen、不改写 `read_image`、无 TUI、不改默认模型。浏览器面只有一张设置卡片加会话头部的一个额度胶囊(按当前 provider 切换 Codex / OpenCode Go / DeepSeek 三种读数);登录仍然只在 dsh 主机的终端里发生,凭据永远不进浏览器,也不进 `settings.yaml`。额度读取复用 Harness Connection 的 trusted-host 栅栏,不直接注册绕过边界的 HTTP 路由。
+**刻意不做的**(相对 dsh-codex):不接管 web 搜索、无 imagegen、不改写 `read_image`(宿主自带的那个在这条路由上照常可用,见「使用」)、无 TUI、不改默认模型。浏览器面只有一张设置卡片加会话头部的一个额度胶囊(按当前 provider 切换 Codex / OpenCode Go / DeepSeek 三种读数);登录仍然只在 dsh 主机的终端里发生,凭据永远不进浏览器,也不进 `settings.yaml`。额度读取复用 Harness Connection 的 trusted-host 栅栏,不直接注册绕过边界的 HTTP 路由。
 
 ## 安装
 
@@ -39,6 +39,8 @@ dsh plugin --profile web exec dsh-codex-lite logout
 ## 使用
 
 重启 `dsh web`,在会话里 `/model` 选 `openai-codex` 下的模型即可;默认模型保持你原有设置不变。未登录时请求会明确报错并提示登录命令。
+
+**读图**:宿主自带的 `read_image` 在这条路由上照常可用,本插件不替换它。pi-ai 官方 catalog 给除 `gpt-5.3-codex-spark` 以外的每个 Codex 模型都声明了 `image` 输入,附件服务也按官方 pi-ai 路由的同一种接法接上了(`resolveAttachments: () => ctx.get('attachments')`)。spark 是纯文本模型,对它调 `read_image` 会被明确拒绝并提示换模型,而不是先读盘再在上游失败。
 
 ## 查看额度
 
