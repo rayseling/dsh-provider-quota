@@ -1,6 +1,8 @@
 # dsh-codex-lite
 
-在 DeepSeek Harness 里用 ChatGPT Plus/Pro 订阅跑 Codex 模型 —— 只做这一件事。
+在 DeepSeek Harness 里用 ChatGPT Plus/Pro 订阅跑 Codex 模型 —— 模型路由只做这一件事。
+
+外加一件小事:在会话里显示**当前模型所属账户**还剩多少——Codex 周额度、OpenCode Go 的 5h/7d/1m、DeepSeek 余额。后两个 provider 的模型不由本插件路由(那是 `llm-pi-ai` / `llm-deepseek` 的事),这里只读它们的余量。
 
 八个源文件、零构建。官方件能用的全用官方件:
 
@@ -9,7 +11,7 @@
 | OAuth(授权码 + PKCE、`auth.openai.com`、`127.0.0.1:1455` 回调、设备码、token 刷新) | `@earendil-works/pi-ai` 官方实现 |
 | 模型目录、wire 协议(`chatgpt.com/backend-api` Responses) | pi-ai 官方 `openai-codex` catalog provider |
 | 消息/流转换、附件、重试、reasoning 元数据 | dsh 官方 `PiAiAdapter`(`@deepseek-ai/dsh-llm-pi-ai` 公开导出) |
-| 本插件自己写的 | 一个 0600 权限的凭据文件存储 + 终端登录命令 + 一个把 OAuth token 作为请求级 bearer 交给官方适配器的桥(含凭据解析的单飞与超时护栏)+ 一个 token 脱敏器 + 一个只返回标准化额度数据的 Connection RPC + 一张 Settings 卡片(手写的经典脚本,无打包步骤) |
+| 本插件自己写的 | 一个 0600 权限的凭据文件存储 + 终端登录命令 + 一个把 OAuth token 作为请求级 bearer 交给官方适配器的桥(含凭据解析的单飞与超时护栏)+ 一个 token 脱敏器 + 一个把三个上游的额度/余额归一成同一个 union 的 Connection RPC(只出标准化数据,凭据一律留在主机)+ 一张 Settings 卡片和一个会话头部额度胶囊(手写的经典脚本,无打包步骤) |
 
 **刻意不做的**(相对 dsh-codex):不接管 web 搜索、无 imagegen、不改写 `read_image`、无 TUI、不改默认模型。浏览器面只有一张设置卡片加会话头部的一个额度胶囊(按当前 provider 切换 Codex / OpenCode Go / DeepSeek 三种读数);登录仍然只在 dsh 主机的终端里发生,凭据永远不进浏览器,也不进 `settings.yaml`。额度读取复用 Harness Connection 的 trusted-host 栅栏,不直接注册绕过边界的 HTTP 路由。
 
@@ -40,7 +42,7 @@ dsh plugin --profile web exec dsh-codex-lite logout
 
 ## 查看额度
 
-会话界面和设置页都能看到,**跟着当前会话选中的模型走**,共用同一份数据:
+会话界面和设置页都能看到,**跟着当前会话选中的模型走**,共用同一份数据。三个上游里只有 Codex 是本插件路由的,另外两个纯粹是「顺路读一下你已经配好的那把 key 还剩多少」——本插件不碰它们的模型请求:
 
 - **会话界面**:会话标题右侧的胶囊按当前 provider 显示:
   - `openai-codex` → `周剩余 60%`(本周已用/剩余、重置时间)
