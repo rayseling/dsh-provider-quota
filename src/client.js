@@ -855,7 +855,7 @@
       this.publish()
       var payload = { ns: SETTINGS_NS, ops: ops }
       if (snapshot.revision !== undefined) payload.expectedRevision = snapshot.revision
-      return Promise.resolve(this.api.settings.mutate(payload)).then(function (response) {
+      return Promise.resolve().then(function () { return self.api.settings.mutate(payload) }).then(function (response) {
         if (response !== undefined && response.result !== undefined && response.result.ok) {
           // The answer to a settings write IS the namespace's new view, so the
           // Host folds it into the shared mirror rather than paying for a read
@@ -908,10 +908,12 @@
      */
     function modelDirectoriesOf(ctx) {
       var service
-      var settled = false
       return function () {
-        if (settled) return service
-        settled = true
+        // Memoize the HIT, never the miss. The chip can render before the
+        // model-selection plugin has mounted, and a miss cached at that moment
+        // would keep the chip off the header for the life of the page — only a
+        // reload could recover it. A miss is cheap to re-ask.
+        if (service !== undefined) return service
         try { service = ctx.get('modelDirectories') } catch (_missingService) { service = undefined }
         if (service === null) service = undefined
         return service
@@ -934,11 +936,32 @@
       var service = this.resolveService()
       if (service === undefined || sessionId === undefined || sessionId === null) return undefined
       var key = String(sessionId)
-      if (this.cache.has(key)) return this.cache.get(key)
+      // Ask the service every time and key the cache on the directory's own
+      // identity. The harness disposes a session's directory when its scope
+      // tears down and builds a fresh one on the way back, and a disposed one
+      // stops notifying — so a wrapper cached by session id alone would leave
+      // the chip subscribed to a dead store, frozen on the model state from
+      // the previous visit. The cache still does its job: while the directory
+      // is the same object the wrapper is too, which is what keeps
+      // `useSyncExternalStore` from resubscribing on every render.
+      var directory
+      try {
+        directory = service.directoryFor(sessionId)
+        if (directory === null || directory === undefined || directory.store === undefined) directory = undefined
+      } catch (_scopeFailed) {
+        directory = undefined
+      }
+      if (directory === undefined) {
+        // No scope registered yet is a timing miss, not a verdict. Answer the
+        // stand-in without storing it, so the next render can find the real
+        // one instead of inheriting this moment forever.
+        this.cache.delete(key)
+        return EMPTY_DIRECTORY
+      }
+      var cached = this.cache.get(key)
+      if (cached !== undefined && cached.source === directory) return cached.entry
       var entry
       try {
-        var directory = service.directoryFor(sessionId)
-        if (directory === undefined || directory === null || directory.store === undefined) throw new Error('no directory store')
         var store = directory.store
         entry = {
           getSnapshot: function () {
@@ -961,11 +984,11 @@
             } catch (_loadFailed) { /* stay invisible rather than throw inside the slot */ }
           },
         }
-      } catch (_scopeFailed) {
-        entry = EMPTY_DIRECTORY
+      } catch (_wrapFailed) {
+        return EMPTY_DIRECTORY
       }
       if (this.cache.size >= 128) this.cache.clear()
-      this.cache.set(key, entry)
+      this.cache.set(key, { source: directory, entry: entry })
       return entry
     }
 
@@ -1102,10 +1125,15 @@
       var state = props.useCodexCard(function (snapshot) { return snapshot })
       var directory = props.modelDirectoryFor(props.sessionId)
       var dir = directory === undefined ? EMPTY_DIRECTORY : directory
-      var modelState = React.useSyncExternalStore(
-        function (listener) { return dir.subscribe(listener) },
-        function () { return dir.getSnapshot() },
-      )
+      // Both arguments have to be stable across renders, not just correct.
+      // React resubscribes whenever `subscribe` changes identity, and this
+      // component re-renders on every controller publish — which includes each
+      // keystroke in the context-window field, since the card and the chip
+      // share one store. A fresh closure per render would churn a
+      // subscribe/unsubscribe pair on the session's model store per character.
+      var subscribeModels = React.useCallback(function (listener) { return dir.subscribe(listener) }, [dir])
+      var readModels = React.useCallback(function () { return dir.getSnapshot() }, [dir])
+      var modelState = React.useSyncExternalStore(subscribeModels, readModels)
       var sessionId = props.sessionId
       React.useEffect(function () {
         if (directory === undefined) return undefined

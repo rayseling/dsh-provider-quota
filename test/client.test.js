@@ -557,6 +557,79 @@ describe('provider route state', () => {
     assert.equal(entry.getSnapshot().current.provider, 'deepseek-official')
   })
 
+  test('rebuilds the wrapper when the harness replaces a session directory', () => {
+    // The harness disposes a session's directory when its scope tears down and
+    // builds a fresh one on the way back, and a disposed one stops notifying.
+    // Caching by session id alone leaves the chip subscribed to a dead store,
+    // frozen on the model from the previous visit.
+    const { exports } = materialize()
+    const makeDirectory = provider => ({
+      store: {
+        getSnapshot: () => ({ current: { provider: provider, model: 'm' }, status: 'ready' }),
+        subscribe: () => () => {},
+      },
+      load: async () => {},
+    })
+    let directory = makeDirectory('openai-codex')
+    const ctx = fakeContext()
+    ctx.get = name => (name === 'connection' ? ctx.connection
+      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'modelDirectories' ? { directoryFor: () => directory }
+      : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    const first = face.modelDirectoryFor('session-1')
+    assert.equal(face.modelDirectoryFor('session-1'), first,
+      'a stable directory must yield a stable wrapper, or useSyncExternalStore resubscribes every render')
+    directory = makeDirectory('deepseek-official')
+    const second = face.modelDirectoryFor('session-1')
+    assert.notEqual(second, first, 'a replaced directory must not keep the old wrapper')
+    assert.equal(second.getSnapshot().current.provider, 'deepseek-official')
+  })
+
+  test('a service that is not mounted yet is re-asked, not written off for the page', () => {
+    // The chip can render before the model-selection plugin mounts. Caching
+    // that miss keeps the chip off the header until a reload.
+    const { exports } = materialize()
+    const directory = {
+      store: { getSnapshot: () => ({ current: { provider: 'openai-codex', model: 'm' }, status: 'ready' }), subscribe: () => () => {} },
+      load: async () => {},
+    }
+    let service
+    const ctx = fakeContext()
+    ctx.get = name => (name === 'connection' ? ctx.connection
+      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'modelDirectories' ? service
+      : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    assert.equal(face.modelDirectoryFor('session-1'), undefined, 'nothing to answer with yet')
+    service = { directoryFor: () => directory }
+    const entry = face.modelDirectoryFor('session-1')
+    assert.ok(entry !== undefined && entry.getSnapshot().current.provider === 'openai-codex',
+      'the later mount has to be visible')
+  })
+
+  test('a session whose scope is not registered yet is retried once it is', () => {
+    const { exports } = materialize()
+    const directory = {
+      store: { getSnapshot: () => ({ current: { provider: 'openai-codex', model: 'm' }, status: 'ready' }), subscribe: () => () => {} },
+      load: async () => {},
+    }
+    let scoped = false
+    const ctx = fakeContext()
+    ctx.get = name => (name === 'connection' ? ctx.connection
+      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'modelDirectories' ? { directoryFor: () => { if (!scoped) throw new Error('no scope'); return directory } }
+      : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    assert.equal(face.modelDirectoryFor('session-1').getSnapshot().current, null, 'the stand-in, for now')
+    scoped = true
+    assert.equal(face.modelDirectoryFor('session-1').getSnapshot().current.provider, 'openai-codex',
+      'a timing miss must not be cached as a verdict')
+  })
+
   test('a session without a directory scope answers the empty stand-in', () => {
     const { exports } = materialize()
     const ctx = fakeContext()
@@ -809,6 +882,15 @@ describe('save', () => {
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
     assert.match(face.hooks.codexCard.getSnapshot().failure, /连接|connection/u)
+  })
+
+  test('reports a synchronous write transport error and clears saving', async () => {
+    const face = saving(() => { throw new Error('offline') })
+    face.edit('gpt-5.6-sol', '900k')
+    await face.save()
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.equal(state.saving, false)
+    assert.match(state.failure, /连接|connection/u)
   })
 
   test('refuses to send an invalid draft', async () => {
