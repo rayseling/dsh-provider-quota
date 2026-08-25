@@ -12,8 +12,22 @@
 /** OpenAI endpoint used by the current first-party Codex client. */
 export const OPENAI_CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 
-/** Undocumented OpenCode Go usage endpoint (discovered by cc-switch#6433). */
-export const OPENCODE_GO_USAGE_URL = 'https://opencode.ai/zen/go/v1'
+/**
+ * Undocumented OpenCode Go API base (endpoint discovered by cc-switch#6433).
+ *
+ * A BASE, not a URL: {@link fetchOpencodeUsage} appends `/usage` to it, and
+ * the same append runs on a `baseURL` read from the route's own settings. The
+ * two have to agree on where the version segment lives, and this value carries
+ * `/v1`. The installed pi-ai catalog is NOT uniform about it: the twelve
+ * openai-completions models and the one openai-responses model carry
+ * `.../zen/go/v1`, while the three anthropic-messages models carry
+ * `.../zen/go` — that SDK appends `/v1/messages` itself. The quota read uses
+ * this constant or the route's configured `baseURL`, never the model's own,
+ * so the split does not reach it today. Configure the route with a base that
+ * stops short of the version segment and the read goes to a path that does
+ * not exist.
+ */
+export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
 
 /** DeepSeek official balance endpoint; the path is appended to the route's baseURL. */
 export const DEEPSEEK_PUBLIC_BASE_URL = 'https://api.deepseek.com'

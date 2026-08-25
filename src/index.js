@@ -30,7 +30,7 @@ import {
   createProviderUsageService,
   DEEPSEEK_PUBLIC_BASE_URL,
   OPENAI_CODEX_USAGE_CHANNEL,
-  OPENCODE_GO_USAGE_URL,
+  OPENCODE_GO_BASE_URL,
 } from './usage.js'
 import { credentialKey, credentialRef, isCredentialKeySegment } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
@@ -55,7 +55,7 @@ export {
   OPENAI_CODEX_USAGE_CHANNEL,
   OPENAI_CODEX_USAGE_METHOD,
   OPENAI_CODEX_USAGE_URL,
-  OPENCODE_GO_USAGE_URL,
+  OPENCODE_GO_BASE_URL,
 } from './usage.js'
 
 /** Stable Cordis plugin name. */
@@ -252,7 +252,7 @@ export function apply(ctx, config) {
         ? profile.apiKeyEnv : 'OPENCODE_GO_API_KEY'
       const key = await resolveApiKey(ctx, envName, 'llm-pi-ai', provider) ?? await opencodeAuthJsonKey()
       if (key === undefined) throw new CodexUsageError('no-credential', 'OpenCode Go API key is not configured')
-      const endpoint = httpBase(isProfile && typeof profile.baseURL === 'string' ? profile.baseURL : OPENCODE_GO_USAGE_URL)
+      const endpoint = httpBase(isProfile && typeof profile.baseURL === 'string' ? profile.baseURL : OPENCODE_GO_BASE_URL)
       if (endpoint === undefined) throw new CodexUsageError('unavailable', 'OpenCode Go usage endpoint is not an absolute URL')
       return { kind: 'opencode', endpoint, apiKey: key }
     }

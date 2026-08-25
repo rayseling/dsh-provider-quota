@@ -14,8 +14,9 @@ import {
   normalizeDeepSeekBalance,
   normalizeOpencodeGoUsage,
   normalizeOpenAICodexUsage,
+  DEEPSEEK_PUBLIC_BASE_URL,
   OPENAI_CODEX_USAGE_URL,
-  OPENCODE_GO_USAGE_URL,
+  OPENCODE_GO_BASE_URL,
 } from '../src/usage.js'
 
 const NOW = Date.parse('2026-08-20T12:00:00Z')
@@ -181,6 +182,54 @@ describe('DeepSeek balance normalization', () => {
   })
 })
 
+describe('shipped bases compose into the endpoints they are meant to reach', () => {
+  // The cases below hand `fetch*` a hard-coded endpoint string and then assert
+  // the request carried that same string back. That is an assertion about the
+  // test's own input: the exported constant is never involved, so deleting the
+  // `/v1` segment from it leaves the whole suite green. These three feed the
+  // real constants in instead, which is the only way the version segment is
+  // pinned to the side it belongs on.
+  //
+  // Trap 5 in AGENTS.md: each base is a BASE, and each fetch appends a fixed
+  // suffix. Move the version segment to the wrong side and the read goes to a
+  // path that does not exist — with no error anywhere near the change.
+
+  /**
+   * @param {(options: object) => Promise<unknown>} fetcher - the boundary under test.
+   * @param {string} endpoint - the shipped base, passed through unmodified.
+   * @param {string} body - a payload that normalizes without throwing.
+   * @returns {Promise<string>} the URL the boundary actually requested.
+   */
+  async function requestedUrl(fetcher, endpoint, body) {
+    let seen
+    await fetcher({
+      endpoint,
+      apiKey: 'k',
+      now: () => NOW,
+      fetch: async (url) => {
+        seen = String(url)
+        return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } })
+      },
+    })
+    return seen
+  }
+
+  test('OPENCODE_GO_BASE_URL keeps the version segment the /usage suffix needs', async () => {
+    assert.equal(
+      await requestedUrl(fetchOpencodeUsage, OPENCODE_GO_BASE_URL, JSON.stringify({ usage: { rolling: { percent: 1 } } })),
+      'https://opencode.ai/zen/go/v1/usage',
+    )
+  })
+
+  test('DEEPSEEK_PUBLIC_BASE_URL stops short of the version segment its suffix carries', async () => {
+    assert.equal(
+      await requestedUrl(fetchDeepSeekBalance, DEEPSEEK_PUBLIC_BASE_URL, JSON.stringify({ is_available: true, balance_infos: [] })),
+      'https://api.deepseek.com/user/balance',
+    )
+  })
+
+})
+
 describe('API-key provider fetches', () => {
   test('OpenCode: bearer plus x-api-key upstream, nothing secret in the result', async () => {
     let request
@@ -201,11 +250,11 @@ describe('API-key provider fetches', () => {
 
   test('OpenCode: 403 means no subscription, 404 means the endpoint moved', async () => {
     await assert.rejects(
-      fetchOpencodeUsage({ endpoint: OPENCODE_GO_USAGE_URL, apiKey: 'k', fetch: async () => new Response('denied', { status: 403 }) }),
+      fetchOpencodeUsage({ endpoint: OPENCODE_GO_BASE_URL, apiKey: 'k', fetch: async () => new Response('denied', { status: 403 }) }),
       error => error.code === 'no-subscription',
     )
     await assert.rejects(
-      fetchOpencodeUsage({ endpoint: OPENCODE_GO_USAGE_URL, apiKey: 'k', fetch: async () => new Response('gone', { status: 404 }) }),
+      fetchOpencodeUsage({ endpoint: OPENCODE_GO_BASE_URL, apiKey: 'k', fetch: async () => new Response('gone', { status: 404 }) }),
       error => error.code === 'unavailable',
     )
   })
