@@ -1,12 +1,13 @@
 {
   "name": "dsh-codex-lite",
-  "version": "0.3.0",
-  "description": "Minimal ChatGPT-subscription model route for DeepSeek Harness: official pi-ai Codex OAuth + the official PiAiAdapter, one file credential store, a terminal login, and one Settings card for the per-model context window. No HTTP routes, no tools, no default changes.",
+  "version": "0.6.0",
+  "description": "ChatGPT-subscription Codex route for DeepSeek Harness: official pi-ai OAuth/adapter, owner-only credentials, terminal login, provider-aware quota display (Codex weekly, OpenCode Go 5h/7d/1m, DeepSeek balance), and per-model context settings. No tools or default changes.",
   "type": "module",
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
     "./client": "./src/client.js",
+    "./usage": "./src/usage.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -33,7 +34,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-atomic-write": "*",
+    "@deepseek-ai/dsh-credentials": "*",
     "@deepseek-ai/dsh-home-paths": "*",
+    "@deepseek-ai/dsh-launch-environment": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-llm-pi-ai": "*",
     "@deepseek-ai/dsh-settings": "*",

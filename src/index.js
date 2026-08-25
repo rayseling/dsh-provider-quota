@@ -3,9 +3,13 @@
  * and nothing else: `ctx.llm` gains the `openai-codex` provider (pi-ai's
  * official catalog: models, wire protocol, OAuth refresh) backed by an
  * owner-only credential file under `$DSH_HOME`. Sign-in is the terminal
- * `dsh-codex-lite login` command; this plugin registers no HTTP routes, no
- * tools and no search provider, and changes no defaults. Its only browser
- * code is one Settings card editing the one field below.
+ * `dsh-codex-lite login` command. In a Web composition it also registers one
+ * read-only Connection RPC that answers the account-level usage of the
+ * session's current model route — Codex weekly windows, OpenCode Go 5h/7d/1m
+ * windows, or the official DeepSeek balance — for the Settings card and the
+ * session-header chip; Connection applies the Harness trusted-host fence
+ * first, and every credential stays host-side.
+ * It registers no tools or search provider and changes no defaults.
  *
  * That field has three layers, each overriding the one above: the schema's
  * empty default, the composition entry (`cordis.patch.yml`, the deployment
@@ -18,17 +22,46 @@
 
 import z from '@deepseek-ai/schemastery'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
-import { assertKnownModelIds, createOpenAICodexLiteAdapter, openAICodexCatalogModelIds } from './adapter.js'
+import { assertKnownModelIds, createOpenAICodexAccessResolver, createOpenAICodexLiteAdapter, openAICodexCatalogModelIds } from './adapter.js'
 import { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } from './store.js'
+import {
+  CodexUsageError,
+  createProviderUsageRpc,
+  createProviderUsageService,
+  DEEPSEEK_PUBLIC_BASE_URL,
+  OPENAI_CODEX_USAGE_CHANNEL,
+  OPENCODE_GO_USAGE_URL,
+} from './usage.js'
+import { credentialKey, credentialRef, isCredentialKeySegment } from '@deepseek-ai/dsh-credentials'
+import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 
-export { createOpenAICodexLiteAdapter } from './adapter.js'
+export { createOpenAICodexAccessResolver, createOpenAICodexLiteAdapter } from './adapter.js'
 export { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER, openAICodexAuthPath } from './store.js'
 export { loginOpenAICodex, logoutOpenAICodex, openAICodexAuthStatus } from './auth.js'
+export {
+  createOpenAICodexUsageRpc,
+  createOpenAICodexUsageService,
+  createProviderUsageRpc,
+  createProviderUsageService,
+  fetchDeepSeekBalance,
+  fetchOpencodeUsage,
+  fetchOpenAICodexUsage,
+  normalizeDeepSeekBalance,
+  normalizeOpencodeGoUsage,
+  normalizeOpenAICodexUsage,
+  OPENAI_CODEX_USAGE_CHANNEL,
+  OPENAI_CODEX_USAGE_METHOD,
+  OPENAI_CODEX_USAGE_URL,
+  OPENCODE_GO_USAGE_URL,
+} from './usage.js'
 
 /** Stable Cordis plugin name. */
 export const name = 'llm-openai-codex-lite'
 
-/** The LLM registry is the only service this plugin requires. */
+/** The LLM registry is the only required service; the trusted usage RPC mounts opportunistically. */
 export const inject = ['llm']
 
 /**
@@ -83,6 +116,85 @@ export const Config = z.object({
 const NO_OVERRIDES = Object.freeze({})
 
 /**
+ * Read one settings section defensively: an absent service, an unmounted
+ * namespace, or a reader that throws all answer "nothing", never a throw that
+ * could take the model route down with the quota read.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
+ * @param {object} ns - the branded settings namespace.
+ * @returns {unknown} the live section, when one is attached.
+ */
+function readSection(ctx, ns) {
+  try {
+    var settings = ctx.settings !== undefined ? ctx.settings : ctx.get('settings')
+    if (settings === undefined) return undefined
+    return settings.get(ns)
+  } catch (_sectionUnavailable) {
+    return undefined
+  }
+}
+
+/**
+ * Resolve one API key the same way the model routes resolve their own: the
+ * configured credential reference through the credentials seam (which layers
+ * the managed store over the process environment), then the owning adapter's
+ * stored api-key record, then the launch environment — the same last resort
+ * the native DeepSeek adapter documents. The value leaves this module only
+ * inside an upstream Authorization header.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
+ * @param {string} envName - the credential reference (POSIX identifier).
+ * @param {string|undefined} recordOwner - stored-record scope, when this route stores keys.
+ * @param {string} recordId - stored-record id under that scope.
+ * @returns {Promise<string|undefined>} the key, or nothing when none is configured.
+ */
+async function resolveApiKey(ctx, envName, recordOwner, recordId) {
+  try {
+    var credentials = ctx.get('credentials')
+    if (credentials !== undefined) {
+      var hit = await credentials.resolve(credentialRef(envName))
+      if (hit !== undefined && hit.value.length > 0) return hit.value
+      if (recordOwner !== undefined && isCredentialKeySegment(recordId)) {
+        var record = await credentials.readRecord(credentialKey(recordOwner, recordId))
+        if (record !== undefined && record.kind === 'api-key'
+          && typeof record.key === 'string' && record.key.length > 0) {
+          return record.key
+        }
+      }
+    }
+  } catch (_credentialUnavailable) {
+    // Fall through to the launch environment.
+  }
+  var ambient = launchEnvironmentOf(ctx).get(envName)
+  if (ambient !== undefined && ambient.value.length > 0) return ambient.value
+  return undefined
+}
+
+/** The OpenCode CLI's own stored key, for hosts signed into opencode directly. */
+async function opencodeAuthJsonKey() {
+  try {
+    var raw = JSON.parse(await readFile(join(homedir(), '.local', 'share', 'opencode', 'auth.json'), 'utf8'))
+    var entry = raw['opencode-go'] ?? raw['opencode']
+    if (entry !== null && typeof entry === 'object' && entry.type === 'api'
+      && typeof entry.key === 'string' && entry.key.length > 0) {
+      return entry.key
+    }
+  } catch (_authJsonUnavailable) {
+    // Absent or unreadable — nothing stored.
+  }
+  return undefined
+}
+
+/**
+ * @param {string|undefined} value
+ * @returns {string|undefined} an absolute http(s) base without a trailing slash, or nothing.
+ */
+function httpBase(value) {
+  if (typeof value !== 'string') return undefined
+  var trimmed = value.trim()
+  if (!/^https?:\/\/[^\/\s]+/u.test(trimmed)) return undefined
+  return trimmed.replace(/\/+$/u, '')
+}
+
+/**
  * Register the `openai-codex` route on the harness LLM seam, then bind the
  * route's sizing to the settings section so it can be edited at runtime.
  *
@@ -100,14 +212,70 @@ export function apply(ctx, config) {
   // attached, the composition entry before that and after a detach.
   let current = () => entry
   const store = new OpenAICodexCredentialStore()
+  // Model requests and quota reads share one pi-ai resolver. If either one
+  // rotates an expired OAuth token, concurrent work joins that same refresh
+  // instead of contending for the credential file's cross-process lock.
+  const resolveAccessToken = createOpenAICodexAccessResolver(store)
   ctx.llm.registerAdapter(
     [OPENAI_CODEX_PROVIDER],
     createOpenAICodexLiteAdapter(
       store,
       () => ctx.get('attachments'),
       () => current().modelOverrides ?? NO_OVERRIDES,
+      resolveAccessToken,
     ),
   )
+  // The three quota sources, keyed by the model route the browser reports.
+  // The endpoint of each API-key route is built from that route's own baseURL
+  // plus a fixed suffix, so a key can only ever travel to the origin the model
+  // route itself is configured against; unknown routes answer "none" and the
+  // browser renders nothing. Headless compositions keep the model route
+  // without acquiring a browser dependency; in Web, Connection owns the
+  // Host/Origin/fetch-site trust fence and the channel registration follows
+  // this plugin's fiber on unload.
+  const piSection = () => readSection(ctx, settingsNamespace('llm-pi-ai'))
+  const nativeSection = () => readSection(ctx, settingsNamespace('llm-deepseek'))
+  const resolveRoute = async (provider) => {
+    if (provider === 'openai-codex') return { kind: 'codex' }
+    if (provider === 'opencode-go' || provider === 'opencode-go-extra') {
+      const section = piSection()
+      const profile = section === undefined ? undefined : section.providers?.[provider]
+      const isProfile = profile !== null && typeof profile === 'object'
+      const envName = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
+        ? profile.apiKeyEnv : 'OPENCODE_GO_API_KEY'
+      const key = await resolveApiKey(ctx, envName, 'llm-pi-ai', provider) ?? await opencodeAuthJsonKey()
+      if (key === undefined) throw new CodexUsageError('no-credential', 'OpenCode Go API key is not configured')
+      const endpoint = httpBase(isProfile && typeof profile.baseURL === 'string' ? profile.baseURL : OPENCODE_GO_USAGE_URL)
+      if (endpoint === undefined) throw new CodexUsageError('unavailable', 'OpenCode Go usage endpoint is not an absolute URL')
+      return { kind: 'opencode', endpoint, apiKey: key }
+    }
+    if (provider === 'deepseek-official' || provider === 'deepseek') {
+      const section = provider === 'deepseek-official' ? nativeSection() : piSection()
+      const profile = section === undefined ? undefined : section.providers?.['deepseek']
+      const isProfile = profile !== null && typeof profile === 'object'
+      const envName = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
+        ? profile.apiKeyEnv : 'DEEPSEEK_API_KEY'
+      const key = await resolveApiKey(ctx, envName, provider === 'deepseek' ? 'llm-pi-ai' : undefined, provider === 'deepseek' ? 'deepseek' : '')
+      if (key === undefined) throw new CodexUsageError('no-credential', 'DeepSeek API key is not configured')
+      const configured = isProfile && typeof profile.baseURL === 'string' ? profile.baseURL : undefined
+      const base = httpBase(configured)
+        ?? httpBase(launchEnvironmentOf(ctx).get('DEEPSEEK_BASE_URL')?.value)
+        ?? DEEPSEEK_PUBLIC_BASE_URL
+      return { kind: 'deepseek', endpoint: base, apiKey: key }
+    }
+    return undefined
+  }
+  const usage = createProviderUsageService({
+    resolveRoute,
+    codex: { resolveAccessToken, readCredential: () => store.readCurrent() },
+  })
+  ctx.inject(['connection'], (connectionCtx) => {
+    connectionCtx.connection.rpc.handle(
+      OPENAI_CODEX_USAGE_CHANNEL,
+      createProviderUsageRpc(usage),
+      { authority: 'trusted-host' },
+    )
+  })
   // The catalog ships with the package, so the known ids are fixed for this
   // install and the write-time check costs nothing per validation.
   const catalogIds = openAICodexCatalogModelIds()

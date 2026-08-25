@@ -7,3 +7,5 @@ lib/
 .DS_Store
 # Node's compile cache, written here by the harness runtime during a test run.
 .tmp/
+# Manual verification screenshots from a local `dsh web`; nothing ships them.
+.shots/

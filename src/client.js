@@ -1,7 +1,8 @@
 /**
  * dsh-codex-lite browser half: one card in Settings -> Plugins -> Plugin
- * configuration, editing the per-model context window this plugin's settings
- * namespace owns.
+ * configuration plus a session-header chip, both showing the host-normalized
+ * Codex weekly quota; the card also edits the per-model context window this
+ * plugin's settings namespace owns.
  *
  * The harness ships no generic schema-form renderer — the package that once
  * held one is gone, and the plugin-configuration tab is a card registry keyed
@@ -47,6 +48,35 @@
     /** The LLM route this plugin owns, as the model catalog groups it. */
     var OPENAI_CODEX_ROUTE = 'openai-codex'
 
+    /** Trusted Harness Connection RPC carrying secret-free usage data. */
+    var CODEX_USAGE_CHANNEL = '/dsh-codex-lite'
+    var CODEX_USAGE_METHOD = 'usage'
+    // Host worst case is 20s credential resolution plus a 15s usage fetch.
+    var CODEX_USAGE_TIMEOUT_MS = 40_000
+
+    // The provider routes this chip answers for, mapped to the state slot the
+    // controller keeps per provider family — one slot per family, so switching
+    // models can never show one account's numbers under another provider.
+    var PROVIDER_ROUTES = {
+      'openai-codex': 'codex',
+      'opencode-go': 'opencode',
+      'opencode-go-extra': 'opencode',
+      'deepseek-official': 'deepseek',
+      'deepseek': 'deepseek',
+    }
+
+    // The per-route state slots the controller projects.
+    var USAGE_ROUTES = ['codex', 'opencode', 'deepseek']
+
+    // A stable stand-in for the model directory when the service is absent or
+    // a session has no directory scope: same shape, never notifies.
+    var EMPTY_MODEL_SNAPSHOT = { current: null, routable: null, groups: [], failures: [], status: 'idle', error: null }
+    var EMPTY_DIRECTORY = {
+      getSnapshot: function () { return EMPTY_MODEL_SNAPSHOT },
+      subscribe: function () { return function () {} },
+      ensureLoaded: function () {},
+    }
+
     /**
      * The fraction of the window at which the shipped agent presets start
      * compacting. It lives in the preset, not here — a preset that sets its
@@ -65,7 +95,7 @@
     var TEXT = {
       zh: {
         title: 'OpenAI Codex',
-        description: '调整每个模型的上下文长度。',
+        description: '查看周额度，并调整每个模型的上下文长度。',
         expand: '展开设置',
         collapse: '收起设置',
         window: '上下文长度',
@@ -91,10 +121,38 @@
         offline: '没保存成功,连接中断了。请稍后重试。',
         derived: '{value} tokens · 默认预设下约 {trigger} 时开始压缩较早的对话',
         note: '这个数字只用于本机记账:会话能保留多少历史、什么时候开始压缩。模型真实的上下文上限不会因此变大,而且超出模型原生长度的输入会按更高的价格档计费。',
+        weekly: '周额度',
+        quotaBadge: '周剩余 {remaining}%',
+        windowsTitle: '额度',
+        window5h: '5 小时',
+        window7d: '7 天',
+        window1m: '1 个月',
+        remainingLabel: '剩余 {remaining}%',
+        usedLabel: '已使用 {used}%',
+        resetsLabel: '重置 {time}',
+        balanceTitle: '余额',
+        balanceUnavailable: '余额不可用于 API 调用。',
+        balanceToppedUp: '充值 {value}',
+        balanceGranted: '赠送 {value}',
+        quotaNoKey: '没有找到该提供方的 API Key。',
+        quotaNoSubscription: '这个 API Key 没有对应的订阅。',
+        quotaUsed: '已使用 {used}%',
+        quotaRemaining: '剩余 {remaining}%',
+        quotaReset: '重置时间 {time}',
+        quotaLoading: '正在读取周额度…',
+        quotaUnavailable: '周额度暂不可用',
+        quotaNoWeekly: 'OpenAI 没有为这个账户返回周额度窗口。',
+        quotaSignedOut: '尚未登录。请在主机终端运行 dsh plugin --profile web exec dsh-codex-lite login。',
+        quotaAuth: 'Codex 登录已失效，请在主机终端重新登录。',
+        quotaTimeout: '读取周额度超时，请稍后重试。',
+        quotaRateLimited: '额度接口请求过于频繁，请稍后重试。',
+        quotaFailed: '没能读取周额度，请稍后重试。',
+        refresh: '刷新',
+        refreshing: '刷新中…',
       },
       en: {
         title: 'OpenAI Codex',
-        description: 'Adjust each model’s context length.',
+        description: 'View weekly usage and adjust each model’s context length.',
         expand: 'Show settings',
         collapse: 'Hide settings',
         window: 'Context length',
@@ -120,6 +178,34 @@
         offline: 'Not saved — the connection dropped. Please try again.',
         derived: '{value} tokens · with the default preset, compaction starts around {trigger}',
         note: 'This number is local bookkeeping only: how much history a conversation keeps, and when compaction starts. It does not raise the model’s real context limit, and input past the model’s native length is billed at a higher tier.',
+        weekly: 'Weekly usage',
+        quotaBadge: 'Weekly {remaining}% left',
+        windowsTitle: 'Usage',
+        window5h: '5h',
+        window7d: '7d',
+        window1m: '1m',
+        remainingLabel: '{remaining}% left',
+        usedLabel: '{used}% used',
+        resetsLabel: 'Resets {time}',
+        balanceTitle: 'Balance',
+        balanceUnavailable: 'Balance unavailable for API calls.',
+        balanceToppedUp: 'Topped up {value}',
+        balanceGranted: 'Granted {value}',
+        quotaNoKey: 'No API key configured for this provider.',
+        quotaNoSubscription: 'This API key has no subscription.',
+        quotaUsed: '{used}% used',
+        quotaRemaining: '{remaining}% remaining',
+        quotaReset: 'Resets {time}',
+        quotaLoading: 'Loading weekly usage…',
+        quotaUnavailable: 'Weekly usage unavailable',
+        quotaNoWeekly: 'OpenAI did not return a weekly window for this account.',
+        quotaSignedOut: 'Not signed in. Run dsh plugin --profile web exec dsh-codex-lite login on the host.',
+        quotaAuth: 'The Codex sign-in has expired. Sign in again on the host.',
+        quotaTimeout: 'Weekly usage timed out. Try again shortly.',
+        quotaRateLimited: 'The usage endpoint is rate limited. Try again shortly.',
+        quotaFailed: 'Could not load weekly usage. Try again shortly.',
+        refresh: 'Refresh',
+        refreshing: 'Refreshing…',
       },
     }
 
@@ -245,6 +331,194 @@
       return lines
     }
 
+    /** @param {unknown} value @returns {boolean} whether value is a finite number. */
+    function isFiniteNumber(value) { return typeof value === 'number' && Number.isFinite(value) }
+
+    /**
+     * Validate the tiny, secret-free provider-usage union the Host RPC
+     * returns: windowed usage (Codex weekly, OpenCode 5h/7d/1m), a DeepSeek
+     * balance, or an explicit "nothing to show". Anything else is refused so a
+     * provider never renders data shaped like another provider's.
+     * @param {unknown} result - decoded Connection RPC result.
+     * @returns {object|undefined} normalized usage, or nothing for an unexpected shape.
+     */
+    function readUsageResult(result) {
+      if (result === null || typeof result !== 'object' || result.ok !== true) return undefined
+      var value = result.value
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+      if (value.kind === 'windows') {
+        // An empty list is a real answer, not a malformed one: it is what the
+        // host sends for an account the upstream reports no window for. It has
+        // to survive this gate, or the panel's "no weekly window" copy is
+        // unreachable and that account reads as a transport failure instead.
+        if (!Array.isArray(value.windows)) return undefined
+        var windows = []
+        for (var index = 0; index < value.windows.length; index++) {
+          var window = value.windows[index]
+          if (window === null || typeof window !== 'object'
+            || typeof window.id !== 'string' || window.id.length === 0
+            || !isFiniteNumber(window.usedPercent)
+            || !isFiniteNumber(window.remainingPercent)) return undefined
+          var normalized = {
+            id: window.id,
+            usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
+            remainingPercent: Math.min(100, Math.max(0, window.remainingPercent)),
+          }
+          if (isFiniteNumber(window.resetsAt)) normalized.resetsAt = window.resetsAt
+          windows.push(normalized)
+        }
+        return {
+          kind: 'windows',
+          provider: typeof value.provider === 'string' ? value.provider : undefined,
+          planType: typeof value.planType === 'string' ? value.planType : undefined,
+          windows: windows,
+          fetchedAt: typeof value.fetchedAt === 'string' ? value.fetchedAt : undefined,
+        }
+      }
+      if (value.kind === 'balance') {
+        if (typeof value.isAvailable !== 'boolean' || !Array.isArray(value.balances)) return undefined
+        var balances = []
+        for (var b = 0; b < value.balances.length; b++) {
+          var balance = value.balances[b]
+          if (balance === null || typeof balance !== 'object' || typeof balance.totalBalance !== 'string') return undefined
+          balances.push({
+            currency: typeof balance.currency === 'string' ? balance.currency : undefined,
+            totalBalance: balance.totalBalance,
+            grantedBalance: typeof balance.grantedBalance === 'string' ? balance.grantedBalance : undefined,
+            toppedUpBalance: typeof balance.toppedUpBalance === 'string' ? balance.toppedUpBalance : undefined,
+          })
+        }
+        return {
+          kind: 'balance',
+          provider: typeof value.provider === 'string' ? value.provider : undefined,
+          isAvailable: value.isAvailable,
+          balances: balances,
+          fetchedAt: typeof value.fetchedAt === 'string' ? value.fetchedAt : undefined,
+        }
+      }
+      if (value.kind === 'none') {
+        return { kind: 'none', provider: typeof value.provider === 'string' ? value.provider : undefined }
+      }
+      return undefined
+    }
+
+    /** @param {number} value @returns {string} compact percentage text. */
+    function formatPercent(value) {
+      var rounded = Math.round(value * 10) / 10
+      return String(rounded)
+    }
+
+    /** @param {number} unixSeconds @param {string} language @returns {string} local reset time. */
+    function formatResetTime(unixSeconds, language) {
+      var date = new Date(unixSeconds * 1000)
+      if (!Number.isFinite(date.getTime())) return '—'
+      try {
+        return new Intl.DateTimeFormat(language === 'en' ? 'en-US' : 'zh-CN', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        }).format(date)
+      } catch (_unsupportedDateStyle) {
+        return date.toLocaleString()
+      }
+    }
+
+    /** @param {object|undefined} usage @returns {object|undefined} the weekly window of a windows result. */
+    function weeklyWindowOf(usage) {
+      if (usage === undefined || usage === null || usage.kind !== 'windows') return undefined
+      for (var index = 0; index < usage.windows.length; index++) {
+        if (usage.windows[index].id === '7d') return usage.windows[index]
+      }
+      return undefined
+    }
+
+    /** @param {string} id @param {string} language @returns {string} the localized window label. */
+    function windowLabel(id, language) {
+      var text = TEXT[language] || TEXT.zh
+      if (id === '5h') return text.window5h
+      if (id === '7d') return text.window7d
+      if (id === '1m') return text.window1m
+      return id
+    }
+
+    /** @param {string|undefined} code @returns {string} the currency symbol, or the code itself. */
+    function currencySymbol(code) {
+      if (code === 'CNY') return '¥'
+      if (code === 'USD') return '$'
+      if (code === 'EUR') return '€'
+      return code === undefined ? '' : code
+    }
+
+    /**
+     * Pick the balance the chip shows: the account's CNY line when present,
+     * then USD, then whatever the API listed first.
+     * @param {object[]} balances @returns {object|undefined}
+     */
+    function preferredBalance(balances) {
+      if (!Array.isArray(balances) || balances.length === 0) return undefined
+      for (var index = 0; index < balances.length; index++) {
+        if (balances[index].currency === 'CNY') return balances[index]
+      }
+      for (var index2 = 0; index2 < balances.length; index2++) {
+        if (balances[index2].currency === 'USD') return balances[index2]
+      }
+      return balances[0]
+    }
+
+    /** @param {string|undefined} value @returns {string} the amount as reported, or a dash. */
+    function amountText(value) {
+      return typeof value === 'string' && value.length > 0 ? value : '—'
+    }
+
+    /** @param {object} routeState @returns {boolean} whether a quota number exists to show. */
+    function quotaChipReady(routeState) {
+      var usage = routeState === undefined ? undefined : routeState.usage
+      if (usage === undefined || usage === null) return false
+      if (usage.kind === 'windows') return usage.windows.length > 0
+      if (usage.kind === 'balance') return usage.balances.length > 0
+      return false
+    }
+
+    /**
+     * The capsule text for one provider family. Windows show the remaining
+     * percentage — the weekly window alone for Codex, all three for OpenCode —
+     * and DeepSeek shows the account balance. While loading or after a failure
+     * the capsule reads "额度 …" / "额度 --" in the muted style.
+     * @param {object} routeState - the per-route state slot.
+     * @param {object} text - the active language copy.
+     * @returns {string} the capsule text.
+     */
+    function quotaChipLabel(routeState, text) {
+      var usage = routeState.usage
+      if (usage !== undefined && usage !== null && usage.kind === 'windows' && usage.windows.length > 0) {
+        var weekly = weeklyWindowOf(usage)
+        if (weekly !== undefined && usage.windows.length === 1) {
+          return text.quotaBadge.replace('{remaining}', formatPercent(weekly.remainingPercent))
+        }
+        return usage.windows.map(function (window) {
+          return window.id + ' ' + formatPercent(window.remainingPercent) + '%'
+        }).join(' · ')
+      }
+      if (usage !== undefined && usage !== null && usage.kind === 'balance') {
+        var preferred = preferredBalance(usage.balances)
+        if (preferred !== undefined) {
+          return text.balanceTitle + ' ' + currencySymbol(preferred.currency) + amountText(preferred.totalBalance)
+        }
+      }
+      return text.windowsTitle + (routeState.state === 'loading' ? ' …' : ' --')
+    }
+
+    /** @param {string|undefined} code @param {string} language @returns {string} localized usage failure. */
+    function quotaFailureText(code, language) {
+      var text = TEXT[language] || TEXT.zh
+      if (code === 'signed-out') return text.quotaSignedOut
+      if (code === 'auth' || code === 'credential') return text.quotaAuth
+      if (code === 'timeout') return text.quotaTimeout
+      if (code === 'rate-limited' || code === 'refresh-throttled') return text.quotaRateLimited
+      if (code === 'no-credential') return text.quotaNoKey
+      if (code === 'no-subscription') return text.quotaNoSubscription
+      return text.quotaFailed
+    }
+
     /**
      * Turn the staged edits into the write the seam should apply.
      *
@@ -306,6 +580,11 @@
 
     // ── the controller ──
 
+    /** @returns {object} one fresh per-route usage state slot. */
+    function newUsageSlot() {
+      return { usage: undefined, state: 'idle', failure: undefined, abort: undefined, generation: 0 }
+    }
+
     /**
      * Own the card's staged edits and the two conversations behind it: reads
      * from the settings scope, writes straight to the settings wire.
@@ -316,13 +595,14 @@
      * of the host half's `validate` hook is to tell the operator which model
      * ids the catalog actually carries.
      * @param {object} scope - the bound settings scope.
-     * @param {object} api - the connection's wire face.
+     * @param {object} connection - API plus trusted generic RPC transport.
      * @param {object|undefined} locale - the locale service, when one is mounted.
      */
-    function Controller(scope, api, locale, mirror) {
+    function Controller(scope, connection, locale, mirror) {
       var self = this
       this.scope = scope
-      this.api = api
+      this.connection = connection
+      this.api = connection.api
       this.locale = locale
       // The shared describe mirror. `save` folds each write answer into it,
       // which is what advances the revision the next write fences on.
@@ -330,6 +610,12 @@
       this.drafts = {}
       this.catalog = []
       this.catalogState = 'idle'
+      // One state slot per provider family; the usage/usageState/usageFailure
+      // fields below mirror the Codex slot so the settings card keeps its reads.
+      this.routes = {}
+      USAGE_ROUTES.forEach(function (route) { self.routes[route] = newUsageSlot() })
+      this.modelDirectoryFor = undefined
+      this.disposed = false
       this.failure = undefined
       this.saving = false
       this.store = createStore(this.project())
@@ -340,6 +626,11 @@
         removeRow: function (model) { self.removeRow(model) },
         addRow: function (model) { self.addRow(model) },
         retryCatalog: function () { self.loadCatalog() },
+        refreshUsage: function (provider) { return self.loadUsage(provider === undefined ? 'openai-codex' : provider, true) },
+        loadUsage: function (provider, force) { return self.loadUsage(provider, force === true) },
+        modelDirectoryFor: function (sessionId) {
+          return self.modelDirectoryFor === undefined ? undefined : self.modelDirectoryFor(sessionId)
+        },
         save: function () { return self.save() },
         discard: function () { self.discard() },
       }
@@ -368,6 +659,10 @@
         rows: rows,
         addable: this.catalog.filter(function (id) { return known[id] !== true }),
         catalogFailed: this.catalogState === 'failed',
+        usage: this.routes.codex.usage,
+        usageState: this.routes.codex.state,
+        usageFailure: this.routes.codex.failure,
+        routes: this.routes,
         dirty: Object.keys(this.drafts).length > 0,
         invalid: rows.some(function (row) { return row.invalid }),
         saving: this.saving,
@@ -469,6 +764,85 @@
       this.publish()
     }
 
+    /**
+     * Read one provider family's normalized usage over the trusted Connection
+     * RPC. Each route slot carries its own generation and abort, so a late
+     * answer for a provider the session has switched away from is dropped
+     * rather than shown under the wrong provider.
+     */
+    Controller.prototype.loadUsage = function (provider, force) {
+      var self = this
+      var route = typeof provider === 'string' ? PROVIDER_ROUTES[provider] : undefined
+      if (this.disposed || route === undefined) return Promise.resolve()
+      var slot = this.routes[route]
+      if (slot.state === 'loading') return Promise.resolve()
+      slot.state = 'loading'
+      slot.failure = undefined
+      this.publish()
+      if (slot.abort !== undefined) slot.abort.abort()
+      var abort = new AbortController()
+      var generation = ++slot.generation
+      slot.abort = abort
+      var timer = setTimeout(function () { abort.abort() }, CODEX_USAGE_TIMEOUT_MS)
+      var request
+      try {
+        request = this.connection.rpc.call(
+          CODEX_USAGE_CHANNEL,
+          CODEX_USAGE_METHOD,
+          { provider: provider, force: force === true },
+          abort.signal,
+        )
+      } catch (_requestFailed) {
+        clearTimeout(timer)
+        slot.abort = undefined
+        slot.state = 'failed'
+        slot.failure = 'unavailable'
+        this.publish()
+        return Promise.resolve()
+      }
+      return Promise.resolve(request).then(function (result) {
+        if (self.disposed || generation !== slot.generation) return
+        var code = result && result.error && typeof result.error.code === 'string' ? result.error.code : undefined
+        if (!result || result.ok !== true) {
+          slot.state = 'failed'
+          slot.failure = code || 'unavailable'
+          self.publish()
+          return
+        }
+        var usage = readUsageResult(result)
+        if (usage === undefined) {
+          slot.state = 'failed'
+          slot.failure = 'invalid-response'
+          self.publish()
+          return
+        }
+        slot.usage = usage
+        slot.state = 'ready'
+        slot.failure = undefined
+        self.publish()
+      }).catch(function () {
+        if (self.disposed || generation !== slot.generation) return
+        slot.state = 'failed'
+        slot.failure = abort.signal.aborted ? 'timeout' : 'unavailable'
+        self.publish()
+      }).finally(function () {
+        clearTimeout(timer)
+        if (generation === slot.generation) slot.abort = undefined
+      })
+    }
+
+    /** Stop every pending usage read and make every late completion inert. */
+    Controller.prototype.dispose = function () {
+      var self = this
+      this.disposed = true
+      USAGE_ROUTES.forEach(function (route) {
+        var slot = self.routes[route]
+        slot.generation++
+        if (slot.abort !== undefined) slot.abort.abort()
+        slot.abort = undefined
+      })
+    }
+
     Controller.prototype.save = function () {
       var self = this
       if (this.saving) return Promise.resolve()
@@ -533,6 +907,267 @@
     // ── the card ──
 
     /**
+     * Lazily resolve the per-session model directory service, exactly once.
+     * The service is not a declared dependency: reading it here is a soft
+     * probe, so a web shell without the model-selection plugin costs only the
+     * chip's provider switch, never this plugin's settings card.
+     * @param {object} ctx - the scoped browser context.
+     * @returns {() => object|undefined} the service resolver.
+     */
+    function modelDirectoriesOf(ctx) {
+      var service
+      var settled = false
+      return function () {
+        if (settled) return service
+        settled = true
+        try { service = ctx.get('modelDirectories') } catch (_missingService) { service = undefined }
+        if (service === null) service = undefined
+        return service
+      }
+    }
+
+    /**
+     * Per-session handles onto the shared model directory store, so the chip
+     * can subscribe to model switches. A session without a directory scope —
+     * or a harness without the service — gets the empty stand-in and renders
+     * no chip, which is the whole recovery.
+     * @param {() => object|undefined} resolveService - the lazy service probe.
+     */
+    function ModelTracker(resolveService) {
+      this.resolveService = resolveService
+      this.cache = new Map()
+    }
+
+    ModelTracker.prototype.directoryFor = function (sessionId) {
+      var service = this.resolveService()
+      if (service === undefined || sessionId === undefined || sessionId === null) return undefined
+      var key = String(sessionId)
+      if (this.cache.has(key)) return this.cache.get(key)
+      var entry
+      try {
+        var directory = service.directoryFor(sessionId)
+        if (directory === undefined || directory === null || directory.store === undefined) throw new Error('no directory store')
+        var store = directory.store
+        entry = {
+          getSnapshot: function () {
+            try { return store.getSnapshot() } catch (_snapshotFailed) { return EMPTY_MODEL_SNAPSHOT }
+          },
+          subscribe: function (listener) {
+            try { return store.subscribe(listener) } catch (_subscribeFailed) { return function () {} }
+          },
+          ensureLoaded: function () {
+            // The store fills once load() has run — the model seat and the
+            // /model popup trigger it on open, but a fresh page whose composer
+            // was never opened would otherwise never learn its provider.
+            try {
+              var snapshot = store.getSnapshot()
+              if (snapshot === null || snapshot === undefined || snapshot.status !== 'idle') return
+              var pending = directory.load()
+              if (pending !== undefined && pending !== null && typeof pending.catch === 'function') {
+                pending.catch(function () { /* the next open remains the retry surface */ })
+              }
+            } catch (_loadFailed) { /* stay invisible rather than throw inside the slot */ }
+          },
+        }
+      } catch (_scopeFailed) {
+        entry = EMPTY_DIRECTORY
+      }
+      if (this.cache.size >= 128) this.cache.clear()
+      this.cache.set(key, entry)
+      return entry
+    }
+
+    /** One usage-window row: remaining first, used and reset beneath it. */
+    function windowRowElement(window, text, language) {
+      var h = React.createElement
+      var remaining = formatPercent(window.remainingPercent)
+      var used = formatPercent(window.usedPercent)
+      return h('div', { key: window.id, className: 'dcl-window' },
+        h('div', { className: 'dcl-quotaNumbers' },
+          h('strong', { className: 'dcl-quotaUsed' }, text.remainingLabel.replace('{remaining}', remaining)),
+          h('span', { className: 'dcl-quotaRemaining' }, text.usedLabel.replace('{used}', used))),
+        h('div', {
+          className: 'dcl-quotaTrack',
+          role: 'progressbar',
+          'aria-label': windowLabel(window.id, language),
+          'aria-valuemin': 0,
+          'aria-valuemax': 100,
+          'aria-valuenow': window.usedPercent,
+        }, h('span', { className: 'dcl-quotaFill', style: { width: window.usedPercent + '%' } })),
+        window.resetsAt === undefined
+          ? null
+          : h('p', { className: 'dcl-quotaReset' },
+            text.resetsLabel.replace('{time}', formatResetTime(window.resetsAt, language))))
+    }
+
+    /**
+     * The windowed-usage panel: the one markup the settings card (Codex
+     * weekly) and the session chip (Codex weekly, OpenCode 5h/7d/1m) share,
+     * so the two surfaces cannot drift apart.
+     * @param {object} routeState - one per-route state slot.
+     * @param {object} text - the active language copy.
+     * @param {() => void} onRefresh - the forced-refresh action.
+     * @param {string} language - the active language key.
+     * @returns {object} the panel element.
+     */
+    function windowsPanelElement(routeState, text, onRefresh, language) {
+      var h = React.createElement
+      var usage = routeState.usage
+      var windows = usage !== undefined && usage !== null && usage.kind === 'windows' ? usage.windows : []
+      var content
+      if (routeState.state === 'loading') {
+        content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' }, text.quotaLoading)]
+      } else if (routeState.state === 'ready' && windows.length > 0) {
+        content = windows.map(function (window) { return windowRowElement(window, text, language) })
+        if (routeState.failure !== undefined) {
+          content.push(h('p', { key: 'failure', className: 'dcl-quotaFailure', role: 'status' },
+            quotaFailureText(routeState.failure, language)))
+        }
+      } else if (routeState.state === 'ready') {
+        content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' }, text.quotaNoWeekly)]
+      } else {
+        content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' },
+          quotaFailureText(routeState.failure, language))]
+      }
+      return h('section', { className: 'dcl-quota', 'aria-label': text.windowsTitle },
+        h('div', { className: 'dcl-quotaHead' },
+          h('span', { className: 'dcl-quotaTitle' }, text.windowsTitle),
+          usage !== undefined && usage !== null && usage.kind === 'windows' && usage.planType
+            ? h('span', { className: 'dcl-plan' }, usage.planType.toUpperCase())
+            : null,
+          h('button', {
+            type: 'button',
+            className: 'dcl-refresh',
+            disabled: routeState.state === 'loading',
+            onClick: onRefresh,
+          }, routeState.state === 'loading' ? text.refreshing : text.refresh)),
+        content)
+    }
+
+    /** The DeepSeek balance panel: every currency the API reported. */
+    function balancePanelElement(routeState, text, onRefresh, language) {
+      var h = React.createElement
+      var usage = routeState.usage
+      var balances = usage !== undefined && usage !== null && usage.kind === 'balance' ? usage.balances : []
+      var content
+      if (routeState.state === 'loading') {
+        content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' }, text.quotaLoading)]
+      } else if (routeState.state === 'ready') {
+        content = balances.map(function (balance, index) {
+          return h('div', { key: index, className: 'dcl-window' },
+            h('div', { className: 'dcl-quotaNumbers' },
+              h('strong', { className: 'dcl-quotaUsed' },
+                currencySymbol(balance.currency) + ' ' + amountText(balance.totalBalance)),
+              h('span', { className: 'dcl-quotaRemaining' }, balance.currency)),
+            balance.toppedUpBalance === undefined && balance.grantedBalance === undefined
+              ? null
+              : h('p', { className: 'dcl-quotaReset' },
+                [balance.toppedUpBalance === undefined ? null : text.balanceToppedUp.replace('{value}', balance.toppedUpBalance),
+                  balance.grantedBalance === undefined ? null : text.balanceGranted.replace('{value}', balance.grantedBalance)]
+                  .filter(Boolean).join(' · ')))
+        })
+        if (usage.isAvailable !== true) {
+          content.push(h('p', { key: 'unavailable', className: 'dcl-quotaFailure', role: 'status' }, text.balanceUnavailable))
+        }
+        if (routeState.failure !== undefined) {
+          content.push(h('p', { key: 'failure', className: 'dcl-quotaFailure', role: 'status' },
+            quotaFailureText(routeState.failure, language)))
+        }
+      } else {
+        content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' },
+          quotaFailureText(routeState.failure, language))]
+      }
+      return h('section', { className: 'dcl-quota', 'aria-label': text.balanceTitle },
+        h('div', { className: 'dcl-quotaHead' },
+          h('span', { className: 'dcl-quotaTitle' }, text.balanceTitle),
+          h('button', {
+            type: 'button',
+            className: 'dcl-refresh',
+            disabled: routeState.state === 'loading',
+            onClick: onRefresh,
+          }, routeState.state === 'loading' ? text.refreshing : text.refresh)),
+        content)
+    }
+
+    /** @param {string} route @param {object} routeState @param {object} text @param {string} language @param {() => void} onRefresh @returns {object} the panel for one route. */
+    function chipPanelElement(route, routeState, text, language, onRefresh) {
+      if (route === 'deepseek') return balancePanelElement(routeState, text, onRefresh, language)
+      return windowsPanelElement(routeState, text, onRefresh, language)
+    }
+
+    /**
+     * The session-header quota chip: the same usage store the settings card
+     * renders, as a capsule beside the session title. Clicking opens the
+     * shared quota panel in a small popover, so the header shows a one-line
+     * hint and the details stay one click away. It is a hint, not a control
+     * surface: a failed read shows the muted placeholder and the popover's
+     * refresh button doubles as retry.
+     * @param {object} props - the injected face, with `hooks` bound to selectors.
+     * @returns {object} the chip and its popover.
+     */
+    function SessionQuotaChip(props) {
+      var h = React.createElement
+      var state = props.useCodexCard(function (snapshot) { return snapshot })
+      var directory = props.modelDirectoryFor(props.sessionId)
+      var dir = directory === undefined ? EMPTY_DIRECTORY : directory
+      var modelState = React.useSyncExternalStore(
+        function (listener) { return dir.subscribe(listener) },
+        function () { return dir.getSnapshot() },
+      )
+      var sessionId = props.sessionId
+      React.useEffect(function () {
+        if (directory === undefined) return undefined
+        directory.ensureLoaded()
+      }, [directory, sessionId])
+      var toggle = React.useState(false)
+      var isOpen = toggle[0]
+      var setOpen = toggle[1]
+      var rootRef = React.useRef(null)
+      // Close on any outside press, the way the shipped menus do; the popover
+      // is not a modal, so the session keeps working while it is open.
+      React.useEffect(function () {
+        if (!isOpen) return undefined
+        function onPointerDown(event) {
+          if (rootRef.current !== null && !rootRef.current.contains(event.target)) setOpen(false)
+        }
+        document.addEventListener('pointerdown', onPointerDown)
+        return function () { document.removeEventListener('pointerdown', onPointerDown) }
+      }, [isOpen])
+      var current = modelState === null || modelState === undefined ? null : modelState.current
+      var provider = current === null || current === undefined ? undefined : current.provider
+      var route = typeof provider === 'string' ? PROVIDER_ROUTES[provider] : undefined
+      var routeState = route === undefined ? undefined : state.routes[route]
+      var loadUsage = props.loadUsage
+      // The Codex slot loads with the settings card; the other two load the
+      // first time a session actually selects their provider.
+      React.useEffect(function () {
+        if (route === undefined || routeState === undefined) return undefined
+        if (routeState.state !== 'idle') return undefined
+        void loadUsage(provider, false)
+      }, [route, routeState, loadUsage, provider])
+      // A provider this plugin does not answer for renders nothing at all —
+      // showing Codex numbers next to a GLM session would be worse than empty.
+      if (route === undefined || routeState === undefined) return null
+      var text = TEXT[state.language]
+      var label = quotaChipLabel(routeState, text)
+      var ready = quotaChipReady(routeState)
+      return h('span', { className: 'dcl-chipWrap', ref: rootRef },
+        h('button', {
+          type: 'button',
+          className: ready ? 'dcl-chip' : 'dcl-chip dcl-chipMuted',
+          'aria-haspopup': 'dialog',
+          'aria-expanded': isOpen,
+          'aria-label': provider,
+          title: label,
+          onClick: function () { setOpen(!isOpen) },
+        }, label),
+        isOpen
+          ? h('div', { className: 'dcl-chipPopover', role: 'dialog', 'aria-label': provider },
+            chipPanelElement(route, routeState, text, state.language, function () { void props.refreshUsage(provider) }))
+          : null)
+    }
+
+    /**
      * @param {object} props - the injected face, with `hooks` bound to selectors.
      * @returns {object|null} the card, or nothing when this deployment does not serve the section.
      */
@@ -551,6 +1186,11 @@
       var text = TEXT[state.language]
       var h = React.createElement
       var busy = !state.writable || state.saving
+      var weekly = weeklyWindowOf(state.usage)
+      var quotaBadge = weekly !== undefined
+        ? text.quotaBadge.replace('{remaining}', formatPercent(weekly.remainingPercent))
+        : text.weekly + (state.usageState === 'loading' ? ' …' : ' --')
+      var quotaPanel = windowsPanelElement(state.routes.codex, text, function () { void props.refreshUsage() }, state.language)
 
       var fields = state.rows.map(function (row) {
         var fieldId = 'dcl-window-' + row.model
@@ -637,11 +1277,13 @@
         h('span', { className: 'dcl-headText' },
           h('span', { className: 'dcl-name' }, text.title),
           h('span', { className: 'dcl-description' }, text.description)),
+        h('span', { className: weekly ? 'dcl-quotaBadge' : 'dcl-quotaBadge dcl-quotaBadgeMuted' }, quotaBadge),
         state.dirty ? h('span', { className: 'dcl-pending' }, text.unsaved) : null,
         React.createElement(ChevronIcon, { className: isOpen ? 'dcl-chevron dcl-chevronOpen' : 'dcl-chevron' })),
         isOpen
           ? h('div', { className: 'dcl-body' },
             state.writable ? null : h('p', { className: 'dcl-readOnly', role: 'status' }, text.readOnly),
+            quotaPanel,
             fields,
             addField,
             h('p', { className: 'dcl-note' }, text.note),
@@ -686,7 +1328,43 @@
       '.dcl-chevronOpen{transform:rotate(180deg)}',
       '.dcl-pending{flex:none;border-radius:999px;padding:1px 8px;font-size:11px;line-height:17px;font-weight:500;',
       'white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}',
+      '.dcl-quotaBadge{flex:none;border-radius:999px;padding:2px 9px;font-size:11px;line-height:17px;font-weight:600;',
+      'white-space:nowrap;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-layer-3)}',
+      '.dcl-quotaBadgeMuted{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-chipWrap{position:relative;display:inline-flex;flex:none}',
+      '.dcl-chip{display:inline-flex;align-items:center;height:24px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);',
+      'border-radius:999px;background:var(--dsw-alias-bg-layer-3);font:inherit;font-size:11px;line-height:1;font-weight:600;',
+      'white-space:nowrap;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:color .16s,border-color .16s}',
+      '.dcl-chip:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}',
+      '.dcl-chip:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+      '.dcl-chipMuted{color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-chipPopover{position:absolute;top:calc(100% + 8px);right:0;z-index:60;width:264px;',
+      'border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-2);',
+      'box-shadow:0 12px 32px rgba(0,0,0,.18)}',
+      '.dcl-chipPopover .dcl-quota{margin:0;border:0;background:transparent}',
       '.dcl-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}',
+      '.dcl-quota{margin:12px 0 2px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;',
+      'background:var(--dsw-alias-bg-layer-3)}',
+      '.dcl-quotaHead{display:flex;align-items:center;gap:8px;margin-bottom:10px}',
+      '.dcl-quotaTitle{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+      '.dcl-plan{border-radius:999px;padding:1px 7px;font-size:10px;line-height:16px;font-weight:600;',
+      'background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-refresh{margin-left:auto;border:0;background:none;padding:0;font:inherit;font-size:12px;',
+      'color:var(--dsw-alias-label-secondary);cursor:pointer}',
+      '.dcl-refresh:hover:not(:disabled){color:var(--dsw-alias-label-primary)}',
+      '.dcl-refresh:disabled{opacity:.5;cursor:default}',
+      '.dcl-quotaNumbers{display:flex;align-items:baseline;justify-content:space-between;gap:12px}',
+      '.dcl-quotaUsed{font-size:18px;line-height:1.35;color:var(--dsw-alias-label-primary)}',
+      '.dcl-quotaRemaining{font-size:12px;color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-quotaTrack{height:7px;margin-top:9px;overflow:hidden;border-radius:999px;',
+      'background:var(--dsw-alias-bg-module-platform)}',
+      '.dcl-quotaFill{display:block;height:100%;border-radius:inherit;background:var(--dsw-alias-brand-primary);',
+      'transition:width .2s ease}',
+      '.dcl-quotaReset,.dcl-quotaEmpty,.dcl-quotaFailure{margin:8px 0 0;font-size:12px;line-height:1.5;',
+      'color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-window{padding:8px 0}',
+      '.dcl-window+.dcl-window{border-top:1px solid var(--dsw-alias-border-l2)}',
+      '.dcl-quotaFailure{color:var(--dsw-alias-label-error)}',
       '.dcl-readOnly{margin:12px 0 0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
       '.dcl-field{display:flex;flex-direction:column;gap:6px;padding:12px 0}',
       '.dcl-field+.dcl-field{border-top:1px solid var(--dsw-alias-border-l2)}',
@@ -747,21 +1425,44 @@
       // The shared describe mirror, which this card folds its write answers
       // into. Not defended here: `mount` runs inside `apply`'s try/catch, so a
       // Host without it costs this card and nothing else.
-      var controller = new Controller(scope, connection.api, localeOf(ctx), ctx.settingsScope.describe())
+      var controller = new Controller(scope, connection, localeOf(ctx), ctx.settingsScope.describe())
       ctx.effect(function () {
         var disposers = [scope.subscribe(function () { controller.publish() })]
         if (controller.locale !== undefined) {
           disposers.push(controller.locale.subscribe(function () { controller.publish() }))
         }
-        return function () { disposers.forEach(function (dispose) { dispose() }) }
+        return function () {
+          controller.dispose()
+          disposers.forEach(function (dispose) { dispose() })
+        }
       }, 'dsh-codex-lite: card sources')
+      var tracker = new ModelTracker(modelDirectoriesOf(ctx))
+      controller.modelDirectoryFor = function (sessionId) { return tracker.directoryFor(sessionId) }
       controller.loadCatalog()
+      void controller.loadUsage('openai-codex', false)
       ctx.slots.inject('settings.plugin.item', function () {
         return ctx.slots.register({
           name: 'settings.plugin.item',
           key: SETTINGS_NS,
           inject: function () { return controller.face },
         }, CodexCard)
+      })
+      // The same controller answers the session-header chip: one usage store,
+      // one refresh, two surfaces. The slot is declared by the conversation
+      // shell; on a harness where it never is, inject simply never runs the
+      // callback — and if it does run and the registry refuses, the chip is
+      // what is lost, never the card above.
+      ctx.slots.inject('conversation.session.header.utilities', function () {
+        try {
+          return ctx.slots.register({
+            name: 'conversation.session.header.utilities',
+            id: 'dsh-codex-lite-usage',
+            order: 100,
+            inject: function () { return controller.face },
+          }, SessionQuotaChip)
+        } catch (error) {
+          console.error('[dsh-codex-lite] session quota chip unavailable:', error)
+        }
       })
     }
 
@@ -819,11 +1520,22 @@
       inject: [],
       apply: apply,
       SETTINGS_NS: SETTINGS_NS,
+      PROVIDER_ROUTES: PROVIDER_ROUTES,
+      TEXT: TEXT,
       parseWindow: parseWindow,
       formatWindow: formatWindow,
       buildOps: buildOps,
       rowsOf: rowsOf,
       hintsOf: hintsOf,
+      readUsageResult: readUsageResult,
+      weeklyWindowOf: weeklyWindowOf,
+      windowLabel: windowLabel,
+      currencySymbol: currencySymbol,
+      preferredBalance: preferredBalance,
+      quotaChipLabel: quotaChipLabel,
+      quotaChipReady: quotaChipReady,
+      formatPercent: formatPercent,
+      quotaFailureText: quotaFailureText,
     }
   }
 })()

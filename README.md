@@ -2,16 +2,16 @@
 
 在 DeepSeek Harness 里用 ChatGPT Plus/Pro 订阅跑 Codex 模型 —— 只做这一件事。
 
-七个源文件、零构建。官方件能用的全用官方件:
+八个源文件、零构建。官方件能用的全用官方件:
 
 | 职责 | 由谁承担 |
 |---|---|
 | OAuth(授权码 + PKCE、`auth.openai.com`、`127.0.0.1:1455` 回调、设备码、token 刷新) | `@earendil-works/pi-ai` 官方实现 |
 | 模型目录、wire 协议(`chatgpt.com/backend-api` Responses) | pi-ai 官方 `openai-codex` catalog provider |
 | 消息/流转换、附件、重试、reasoning 元数据 | dsh 官方 `PiAiAdapter`(`@deepseek-ai/dsh-llm-pi-ai` 公开导出) |
-| 本插件自己写的 | 一个 0600 权限的凭据文件存储 + 终端登录命令 + 一个把 OAuth token 作为请求级 bearer 交给官方适配器的桥(含凭据解析的单飞与超时护栏)+ 一个 token 脱敏器 + 一张 Settings 卡片(手写的经典脚本,无打包步骤) |
+| 本插件自己写的 | 一个 0600 权限的凭据文件存储 + 终端登录命令 + 一个把 OAuth token 作为请求级 bearer 交给官方适配器的桥(含凭据解析的单飞与超时护栏)+ 一个 token 脱敏器 + 一个只返回标准化额度数据的 Connection RPC + 一张 Settings 卡片(手写的经典脚本,无打包步骤) |
 
-**刻意不做的**(相对 dsh-codex):不注册任何 HTTP 路由、不接管 web 搜索、无 imagegen、不改写 `read_image`、无 TUI、不改默认模型。浏览器面只有一张卡片、只编辑一个字段;登录仍然只在 dsh 主机的终端里发生,凭据永远不进浏览器,也不进 `settings.yaml`。
+**刻意不做的**(相对 dsh-codex):不接管 web 搜索、无 imagegen、不改写 `read_image`、无 TUI、不改默认模型。浏览器面只有一张设置卡片加会话头部的一个额度胶囊(按当前 provider 切换 Codex / OpenCode Go / DeepSeek 三种读数);登录仍然只在 dsh 主机的终端里发生,凭据永远不进浏览器,也不进 `settings.yaml`。额度读取复用 Harness Connection 的 trusted-host 栅栏,不直接注册绕过边界的 HTTP 路由。
 
 ## 安装
 
@@ -37,6 +37,32 @@ dsh plugin --profile web exec dsh-codex-lite logout
 ## 使用
 
 重启 `dsh web`,在会话里 `/model` 选 `openai-codex` 下的模型即可;默认模型保持你原有设置不变。未登录时请求会明确报错并提示登录命令。
+
+## 查看额度
+
+会话界面和设置页都能看到,**跟着当前会话选中的模型走**,共用同一份数据:
+
+- **会话界面**:会话标题右侧的胶囊按当前 provider 显示:
+  - `openai-codex` → `周剩余 60%`(本周已用/剩余、重置时间)
+  - `opencode-go` / `opencode-go-extra` → `5h 90% · 7d 80% · 1m 70%`(三个窗口的**剩余**比例)
+  - `deepseek-official` / `deepseek` → `余额 ¥110.00`(官方账户余额)
+  - 其他 provider 或空白新会话:不显示,绝不把别的账户的数字挂上去。
+  点开胶囊是完整面板(逐窗口剩余/已用/进度条/重置时间,或逐币种余额),带「刷新」。切换模型即时切换数据,无需刷新页面。
+- **设置页**:**设置 → 插件 → 插件配置 → OpenAI Codex** 卡片显示 Codex 周额度,展开后是同一份面板。
+
+自动读取结果按账户+provider 在主机内存缓存 30 秒;手动刷新至少间隔 5 秒,防止连续请求把上游打到限流。会话头部胶囊挂在会话壳声明的 `conversation.session.header.utilities` 插槽上;不声明该插槽的旧部署只会少这个胶囊,卡片不受影响。当前模型来自会话的模型目录服务,插件只做软读取,服务缺失时也只是胶囊不显示。
+
+### 三个上游
+
+| provider | 数据来源 | 凭据 |
+| --- | --- | --- |
+| `openai-codex` | `GET https://chatgpt.com/backend-api/wham/usage`(私有契约) | 插件自己存储的 ChatGPT OAuth(登录见上文),账户 id 同源 |
+| `opencode-go` / `opencode-go-extra` | `GET {该路由实际 baseURL}/usage`(未公开接口,cc-switch#6433 发现) | 该路由配置的 `apiKeyEnv`(默认 `OPENCODE_GO_API_KEY`),回退 `llm-pi-ai` 存储的 API key 记录,再回退 OpenCode CLI 的 `auth.json`;同时携带 Bearer 与 `x-api-key` |
+| `deepseek-official` / `deepseek` | `GET {该路由实际 baseURL}/user/balance`(官方接口) | 该路由配置的 `apiKeyEnv`(默认 `DEEPSEEK_API_KEY`),经 credentials seam 解析 |
+
+OpenCode Go 返回「已用」百分比,展示层换算成剩余;DeepSeek 金额保持 API 返回的十进制字符串,不做浮点换算。浏览器通过 Harness Connection RPC 的 `/dsh-codex-lite` channel 拿到标准化后的结果;Connection 会先执行 Host / Origin / Fetch-Site trusted-host 栅栏。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
+
+Codex 与 OpenCode 的接口都是未公开契约:上游改动时对应显示会变成「额度暂不可用」,不影响模型请求;点「刷新」可以重试。若上游本来就没给这个账户返回周额度窗口,面板说明的是这件事,而不是一句「重试」——重试改变不了它。
 
 ## 配置:上下文长度
 
@@ -139,7 +165,7 @@ dsh plugin --profile web remove dsh-codex-lite
 npm test        # node --test,无构建、无测试框架依赖
 ```
 
-`test/redact.test.js` 只依赖 Node,任何检出里都能跑。store / adapter / CLI 三份测试需要 peer 依赖可解析,裸检出里会显式标记 skip,而不是伪装通过。
+`test/redact.test.js`、`test/usage.test.js` 和 `test/client.test.js` 只依赖 Node,任何检出里都能跑。store / adapter / CLI 三份测试需要 peer 依赖可解析,裸检出里会显式标记 skip,而不是伪装通过。
 
 要跑全部,**检出目录自己**得有一棵可解析的 `node_modules`:ESM 的裸导入从导入文件所在位置逐级向上找,与 cwd 无关,所以 `cd` 到装好插件的 profile 再跑没有用——测试文件仍在检出里。软链到 profile 共享的那棵树即可:
 
@@ -150,9 +176,9 @@ npm test
 
 `.gitignore` 里的 `node_modules` 不带尾斜杠正是为此:带斜杠的模式只匹配目录,这个软链会漏进 `git status`。
 
-`test/client.test.js` 也只依赖 Node:它把 `src/client.js` 当经典脚本执行,断言模块表契约(handoff id、只 require `react` 和 `@deepseek-ai/dsh-client-ui-primitives`、`inject` 为空)、卡片注册的 key、以及编辑/保存的纯函数。为此它不 import `src/index.js`——那样会把 pi-ai 和设置层一起拖进来,裸检出里整个文件直接加载失败(不是 skip)。两边的 namespace 靠 `settings.test.js` 里的反向断言钉在一起,那份测试本来就需要 peer。浏览器里跑不到的那部分——真实渲染——由下面的安装步骤人工验证。
+`test/client.test.js` 也只依赖 Node:它把 `src/client.js` 当经典脚本执行,断言模块表契约(handoff id、只 require `react` 和 `@deepseek-ai/dsh-client-ui-primitives`、`inject` 为空)、卡片和会话胶囊两处注册(以及不声明胶囊插槽、或插槽注册抛错的部署里卡片照常活着)、三个 provider 槽各自独立的读取状态机、胶囊文案,以及编辑/保存的纯函数。为此它不 import `src/index.js`——那样会把 pi-ai 和设置层一起拖进来,裸检出里整个文件直接加载失败(不是 skip)。两边的 namespace 靠 `settings.test.js` 里的反向断言钉在一起,那份测试本来就需要 peer。浏览器里跑不到的那部分——真实渲染——由下面的安装步骤人工验证。
 
-测试从不联网:token 端点在 `globalThis.fetch` 上打桩,凭据一律写进临时 `$DSH_HOME` 并在文件跑完后删除,`login` 不在测试范围内。
+测试从不联网:token 和用量端点都在 `globalThis.fetch` 上打桩,凭据一律写进临时 `$DSH_HOME` 并在文件跑完后删除,`login` 不在测试范围内。
 
 ## 开发
 
@@ -163,7 +189,7 @@ rm -rf ~/.dsh/profiles/web/node_modules/dsh-codex-lite
 dsh plugin --profile web add file:/path/to/dsh-codex-lite
 ```
 
-迭代时更省事的是 `link:` 代替 `file:`,装成符号链接,源码即所得;配合内置的客户端 HMR(每 500ms 轮询 bundle),改 `src/client.js` 可以不重启 `dsh web` 直接热更。
+迭代时更省事的是 `link:` 代替 `file:`,装成符号链接,源码即所得。客户端热更还需要在同一份 DeepSeek Harness 检出里运行 `pnpm run dev:web`;只有 HMR 接收器而没有这个构建 watcher 时,改 `src/client.js` 后仍要重启现有 `dsh web` 并刷新页面。
 
 **一个硬约束:** `package.json` 里声明了 `dsh.client`,`src/client.js` 就必须存在于安装后的那份拷贝里——声明了却找不到文件会让 `dsh web` 直接起不来。装完、重启前先确认:
 

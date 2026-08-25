@@ -49,13 +49,14 @@ async function freshHome() {
  * Boot the seam the way the harness composes it.
  * @param {string} home - temp harness home holding `settings.yaml`.
  * @param {object|undefined} config - the plugin's composition entry.
- * @param {{settings?: boolean}} [options] - whether to compose a settings provider at all.
+ * @param {{settings?: boolean, connection?: object}} [options] - optional settings provider and Connection service.
  * @returns {Promise<object>} the root context.
  */
 async function boot(home, config, options = {}) {
   const ctx = new cordis.Context()
   disposers.push(() => ctx.fiber.dispose())
   await ctx.plugin(llm.LlmRuntime)
+  if (options.connection !== undefined) ctx.provide('connection', options.connection)
   if (options.settings !== false) {
     await ctx.plugin(settingsFile.FileSettingsProvider, { path: join(home, 'settings.yaml'), watch: false })
   }
@@ -92,6 +93,23 @@ describe('settings section', { skip }, () => {
     // the card registers under the name asserted here, and a rename that
     // touched only one half would fail here rather than in a browser.
     assert.equal(plugin.settingsNs, 'llm-openai-codex-lite')
+  })
+
+  test('registers quota on the trusted Connection boundary instead of a raw HTTP route', async () => {
+    const home = await freshHome()
+    let registered
+    const connection = {
+      rpc: {
+        handle(channel, handler, options) {
+          registered = { channel, handler, options }
+          return async () => {}
+        },
+      },
+    }
+    await boot(home, {}, { connection })
+    assert.equal(registered.channel, '/dsh-codex-lite')
+    assert.equal(typeof registered.handler, 'function')
+    assert.deepEqual(registered.options, { authority: 'trusted-host' })
   })
 
   test('a stored section overrides the entry for the next request, with no restart', async () => {

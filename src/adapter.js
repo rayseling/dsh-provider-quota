@@ -297,6 +297,56 @@ export function createProfilesThunk(currentOverrides, requestReady, baseProfile)
 }
 
 /**
+ * Resolve the OAuth access token through pi-ai, sharing refresh work and keeping
+ * the same timeout/error taxonomy for model calls and auxiliary Codex APIs.
+ *
+ * The returned function deliberately exposes only the access token. Callers
+ * that need the non-secret ChatGPT account id read it from the credential store
+ * after this resolution, when a possible token rotation has been persisted.
+ * @param {import('./store.js').OpenAICodexCredentialStore} store - the plugin's file credential store.
+ * @returns {() => Promise<string>} a single-flight, bounded access-token resolver.
+ */
+export function createOpenAICodexAccessResolver(store) {
+  const models = createModels({ credentials: store })
+  models.setProvider(boundedRefreshProvider(openaiCodexProvider()))
+  /** @type {Promise<import('@earendil-works/pi-ai').AuthResult | undefined> | undefined} */
+  let inflight
+  const resolveCredential = () => {
+    inflight ??= models.getAuth(OPENAI_CODEX_PROVIDER).finally(() => { inflight = undefined })
+    return withDeadline(
+      inflight,
+      CREDENTIAL_TIMEOUT_MS,
+      () => new LlmError(
+        `OpenAI Codex credential resolution timed out after ${CREDENTIAL_TIMEOUT_MS}ms`,
+        'TIMEOUT',
+      ),
+    )
+  }
+  return async () => {
+    let resolved
+    try {
+      resolved = await resolveCredential()
+    } catch (error) {
+      if (error instanceof LlmError) throw error
+      // No `cause`: the provider's response can contain credential material,
+      // and every surface using this resolver must remain safe to render/log.
+      throw new LlmError(
+        `OpenAI Codex credential resolution failed: ${safeMessage(error)}`,
+        classifyCredentialFailure(error),
+      )
+    }
+    const apiKey = resolved?.auth.apiKey
+    if (apiKey === undefined || apiKey.length === 0) {
+      throw new LlmError(
+        'OpenAI Codex is not signed in: run `dsh plugin --profile web exec dsh-codex-lite login` on the dsh host',
+        'MISSING_CREDENTIAL',
+      )
+    }
+    return apiKey
+  }
+}
+
+/**
  * Assemble the official dsh pi-ai adapter for the one `openai-codex` route.
  * @param {import('./store.js').OpenAICodexCredentialStore} store - the plugin's file credential store.
  * @param {() => import('@deepseek-ai/dsh-attachment').AttachmentStore | undefined} resolveAttachments - durable attachment service, resolved at request time.
@@ -304,9 +354,10 @@ export function createProfilesThunk(currentOverrides, requestReady, baseProfile)
  *   Per-model context windows, by model id. A thunk is re-read on every
  *   operation, so a configuration change reaches the next request without a
  *   restart.
+ * @param {() => Promise<string>} [resolveAccessToken] - shared OAuth access-token resolver.
  * @returns {PiAiAdapter} the adapter to register for `openai-codex`.
  */
-export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOverrides = {}) {
+export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOverrides = {}, resolveAccessToken) {
   const currentOverrides = typeof modelOverrides === 'function' ? modelOverrides : () => modelOverrides
   const provider = openaiCodexProvider()
   const profiles = createProfilesThunk(currentOverrides, requestProvider(provider), {
@@ -321,65 +372,12 @@ export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOve
   // is a configuration error this load must report, which stays true now that
   // the thunk defers every later rebuild to request time.
   profiles()
-  // Private collection holding the persistent store: getAuth() returns the
-  // stored access token, refreshing it through the provider's OAuth method
-  // (and persisting the rotation) when expired.
-  const models = createModels({ credentials: store })
-  models.setProvider(boundedRefreshProvider(provider))
-  // One resolution at a time. A refresh runs under the store's cross-process
-  // lock, and that lock gives a contender two seconds, so letting concurrent
-  // requests race it turns one slow refresh into a failed turn for every other
-  // request in flight. Sharing the resolution also means one rotation per
-  // expiry, which is what a provider issuing rotating refresh tokens expects.
-  /** @type {Promise<import('@earendil-works/pi-ai').AuthResult | undefined> | undefined} */
-  let inflight
-  const resolveCredential = () => {
-    inflight ??= models.getAuth(OPENAI_CODEX_PROVIDER).finally(() => { inflight = undefined })
-    return withDeadline(
-      inflight,
-      CREDENTIAL_TIMEOUT_MS,
-      () => new LlmError(
-        `OpenAI Codex credential resolution timed out after ${CREDENTIAL_TIMEOUT_MS}ms`,
-        'TIMEOUT',
-      ),
-    )
-  }
+  // The host can pass one resolver shared with the usage endpoint, so a token
+  // rotation requested by either consumer is one operation under the file lock.
+  const accessToken = resolveAccessToken ?? createOpenAICodexAccessResolver(store)
   return new PiAiAdapter({
     profiles,
-    resolveApiKey: async () => {
-      let resolved
-      try {
-        resolved = await resolveCredential()
-      } catch (error) {
-        if (error instanceof LlmError) throw error
-        // pi-ai reports a revoked refresh token, a damaged credential document
-        // and lock contention alike as a plain `ModelsError`, which the seam
-        // classifies as `UNKNOWN` and never retries; its message also carries
-        // whatever the token endpoint answered, token material included.
-        //
-        // No `cause`, so the redacted text above is the whole diagnostic.
-        // Attaching the original would leave the token response live on an
-        // object every renderer that walks a `cause` chain will print —
-        // `errorChain`, an unhandled-rejection trace, `util.inspect` in a log
-        // line. The seam happens to detach adapter failures to `{message,
-        // code}` before they reach the browser, so nothing published today
-        // would carry it; that is the seam's decision to revisit, not this
-        // module's to depend on, and redacting a message while keeping the
-        // unredacted one attached to it is not a boundary worth holding.
-        throw new LlmError(
-          `OpenAI Codex credential resolution failed: ${safeMessage(error)}`,
-          classifyCredentialFailure(error),
-        )
-      }
-      const apiKey = resolved?.auth.apiKey
-      if (apiKey === undefined || apiKey.length === 0) {
-        throw new LlmError(
-          'OpenAI Codex is not signed in: run `dsh plugin --profile web exec dsh-codex-lite login` on the dsh host',
-          'MISSING_CREDENTIAL',
-        )
-      }
-      return apiKey
-    },
+    resolveApiKey: accessToken,
     resolveAttachments,
   })
 }

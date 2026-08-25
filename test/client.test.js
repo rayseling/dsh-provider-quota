@@ -33,11 +33,12 @@ const source = await readFile(new URL('../src/client.js', import.meta.url), 'utf
  * Run in this realm rather than a `node:vm` one, so the objects the module
  * builds carry this realm's prototypes and assertions can compare them
  * structurally.
+ * @param {Record<string, unknown>} [windowOverrides] - extra browser globals for one test.
  * @returns {object} the captured handoff.
  */
-function load() {
+function load(windowOverrides = {}) {
   let captured
-  const win = { __ModuleLoader__: { load: (handoff) => { captured = handoff } } }
+  const win = { __ModuleLoader__: { load: (handoff) => { captured = handoff } }, ...windowOverrides }
   // eslint-disable-next-line no-new-func -- executing a script is the contract under test
   new Function('window', 'globalThis', 'console', source)(win, win, console)
   return captured
@@ -46,11 +47,12 @@ function load() {
 /**
  * Materialize the module the way the client module table does.
  * @param {Record<string, unknown>} [table] - the modules `require` may answer.
+ * @param {Record<string, unknown>} [windowOverrides] - extra browser globals for one test.
  * @returns {{exports: object, required: string[]}} the module and what it asked for.
  */
-function materialize(table = { 'react': {}, '@deepseek-ai/dsh-client-ui-primitives': {} }) {
+function materialize(table = { 'react': {}, '@deepseek-ai/dsh-client-ui-primitives': {} }, windowOverrides = {}) {
   const required = []
-  const exports = load().factory((specifier) => {
+  const exports = load(windowOverrides).factory((specifier) => {
     required.push(specifier)
     assert.ok(specifier in table, `require(${JSON.stringify(specifier)}) is outside the platform seed set`)
     return table[specifier]
@@ -62,6 +64,7 @@ function materialize(table = { 'react': {}, '@deepseek-ai/dsh-client-ui-primitiv
 function fakeContext(overrides = {}) {
   const registrations = []
   const effects = []
+  const effectDisposers = []
   const scope = {
     getSnapshot: () => ({ status: 'ready', value: {}, base: undefined, user: undefined, revision: 3, writable: true, mode: 'host' }),
     subscribe: () => () => {},
@@ -73,14 +76,24 @@ function fakeContext(overrides = {}) {
     llm: { models: () => Promise.resolve({ result: { ok: true, value: { groups: [], failures: [] } } }) },
     settings: { mutate: () => Promise.resolve({ result: { ok: true, value: { user: {}, revision: 4 } } }) },
   }
+  const connection = {
+    api,
+    rpc: { call: () => Promise.resolve({ ok: false, error: { code: 'unavailable' } }) },
+  }
   const ctx = {
     registrations,
     effects,
     scope,
     api,
-    get: name => (name === 'connection' ? { api } : name === 'remote' ? { $on: () => () => {} } : undefined),
+    connection,
+    get: name => (name === 'connection' ? connection : name === 'remote' ? { $on: () => () => {} } : undefined),
     inject: (_names, callback) => { callback(ctx) },
-    effect: (run, label) => { effects.push(label); run() },
+    effect: (run, label) => {
+      effects.push(label)
+      const dispose = run()
+      if (typeof dispose === 'function') effectDisposers.push(dispose)
+    },
+    disposeEffects: () => { effectDisposers.splice(0).reverse().forEach(dispose => dispose()) },
     settingsScope: { bind: spec => ({ ...scope, spec }), describe: () => mirror },
     slots: {
       inject: (_name, callback) => { callback() },
@@ -127,12 +140,58 @@ describe('activation', () => {
     const { exports } = materialize()
     const ctx = fakeContext()
     exports.apply(ctx)
-    assert.equal(ctx.registrations.length, 1)
+    assert.equal(ctx.registrations.length, 2)
     const { options, component } = ctx.registrations[0]
     assert.equal(options.name, 'settings.plugin.item')
     assert.equal(options.key, settingsNs)
     assert.equal(typeof options.inject, 'function')
     assert.equal(typeof component, 'function')
+  })
+
+  test('registers the session-header quota chip beside the card, sharing one store', () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    exports.apply(ctx)
+    const chip = ctx.registrations[1]
+    assert.equal(chip.options.name, 'conversation.session.header.utilities')
+    assert.equal(chip.options.id, 'dsh-codex-lite-usage')
+    assert.equal(typeof chip.options.inject, 'function')
+    assert.equal(typeof chip.component, 'function')
+    const cardFace = ctx.registrations[0].options.inject()
+    const chipFace = chip.options.inject()
+    assert.equal(chipFace.hooks.codexCard, cardFace.hooks.codexCard, 'one usage store answers both surfaces')
+    assert.equal(typeof chipFace.refreshUsage, 'function')
+    assert.equal(chip.options.inject(), chipFace, 'the chip face identity is stable too')
+  })
+
+  test('a harness without the conversation slot still gets the card', () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    const injected = []
+    ctx.slots = {
+      inject: (name, callback) => { injected.push(name); if (name === 'settings.plugin.item') callback() },
+      register: (options, component) => { ctx.registrations.push({ options, component }); return () => {} },
+    }
+    exports.apply(ctx)
+    assert.deepEqual(injected, ['settings.plugin.item', 'conversation.session.header.utilities'])
+    assert.equal(ctx.registrations.length, 1, 'the undeclared slot contributes nothing, the card survives')
+    assert.equal(ctx.registrations[0].options.name, 'settings.plugin.item')
+  })
+
+  test('a registry that refuses the chip keeps the card', () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    ctx.slots = {
+      inject: (_name, callback) => { callback() },
+      register: (options, component) => {
+        if (options.name === 'conversation.session.header.utilities') throw new Error('slot closed')
+        ctx.registrations.push({ options, component })
+        return () => {}
+      },
+    }
+    assert.doesNotThrow(() => { exports.apply(ctx) })
+    assert.equal(ctx.registrations.length, 1)
+    assert.equal(ctx.registrations[0].options.name, 'settings.plugin.item')
   })
 
   test('binds the scope with its own decoder', () => {
@@ -155,7 +214,7 @@ describe('activation', () => {
     const face = ctx.registrations[0].options.inject()
     assert.equal(typeof face.hooks.codexCard.getSnapshot, 'function')
     assert.equal(typeof face.hooks.codexCard.subscribe, 'function')
-    for (const name of ['edit', 'resetRow', 'removeRow', 'addRow', 'save', 'discard']) {
+    for (const name of ['edit', 'resetRow', 'removeRow', 'addRow', 'refreshUsage', 'loadUsage', 'modelDirectoryFor', 'save', 'discard']) {
       assert.equal(typeof face[name], 'function', `face.${name}`)
     }
     assert.equal(ctx.registrations[0].options.inject(), face, 'the face identity is stable, so the renderer can cache it')
@@ -231,6 +290,289 @@ describe('formatWindow', () => {
   })
 })
 
+describe('weekly usage card state', () => {
+  const result = {
+    ok: true,
+    value: {
+      kind: 'windows',
+      provider: 'openai-codex',
+      planType: 'plus',
+      windows: [{ id: '7d', usedPercent: 3, remainingPercent: 97, resetsAt: 1_788_134_407 }],
+      fetchedAt: '2026-08-20T12:00:00.000Z',
+    },
+  }
+
+  test('accepts only the normalized, secret-free provider-usage union', () => {
+    const { readUsageResult } = materialize().exports
+    assert.deepEqual(readUsageResult(result), result.value)
+    assert.deepEqual(readUsageResult({
+      ok: true,
+      value: {
+        kind: 'balance',
+        provider: 'deepseek-official',
+        isAvailable: true,
+        balances: [{ currency: 'CNY', totalBalance: '110.00', grantedBalance: '10.00', toppedUpBalance: '100.00' }],
+        fetchedAt: '2026-08-20T12:00:00.000Z',
+      },
+    }), {
+      kind: 'balance',
+      provider: 'deepseek-official',
+      isAvailable: true,
+      balances: [{ currency: 'CNY', totalBalance: '110.00', grantedBalance: '10.00', toppedUpBalance: '100.00' }],
+      fetchedAt: '2026-08-20T12:00:00.000Z',
+    })
+    assert.deepEqual(readUsageResult({ ok: true, value: { kind: 'none', provider: 'glm-5.3' } }), { kind: 'none', provider: 'glm-5.3' })
+    assert.equal(readUsageResult({ ok: true, value: { kind: 'windows', windows: [{ id: '7d', usedPercent: '3' }] } }), undefined)
+    assert.equal(readUsageResult({ ok: true, value: { kind: 'windows', windows: 'none' } }), undefined)
+    assert.equal(readUsageResult({ ok: true, value: { kind: 'balance', isAvailable: true, balances: [{ currency: 'CNY' }] } }), undefined)
+    assert.equal(readUsageResult({ ok: true, value: { weekly: { usedPercent: 3 } } }), undefined, 'the legacy shape is gone')
+    assert.equal(readUsageResult({ ok: false, error: { code: 'auth' } }), undefined)
+  })
+
+  test('loads on mount, publishes weekly usage, and force-refreshes on demand', async () => {
+    const calls = []
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    ctx.connection.rpc.call = async (channel, method, payload, signal) => {
+      calls.push({ channel, method, payload, signal })
+      return result
+    }
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    await new Promise(resolve => setImmediate(resolve))
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.equal(state.usageState, 'ready')
+    assert.deepEqual(state.usage, result.value)
+    assert.deepEqual(calls[0], {
+      channel: '/dsh-codex-lite',
+      method: 'usage',
+      payload: { provider: 'openai-codex', force: false },
+      signal: calls[0].signal,
+    })
+    assert.ok(calls[0].signal instanceof AbortSignal)
+    await face.refreshUsage()
+    assert.deepEqual(calls[1].payload, { provider: 'openai-codex', force: true })
+  })
+
+  test('an account with no weekly window reads as ready-and-empty, not as a failure', async () => {
+    // The host answers `windows: []` for an account OpenAI reports no weekly
+    // window for. Refusing that shape here would file a real answer under
+    // `invalid-response` and show the generic retry copy for a state no retry
+    // can change.
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    ctx.connection.rpc.call = async () => ({
+      ok: true,
+      value: { kind: 'windows', provider: 'openai-codex', windows: [], fetchedAt: '2026-08-20T12:00:00.000Z' },
+    })
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    await new Promise(resolve => setImmediate(resolve))
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.equal(state.usageState, 'ready')
+    assert.equal(state.usageFailure, undefined)
+    assert.deepEqual(state.usage.windows, [])
+    assert.equal(exports.weeklyWindowOf(state.usage), undefined)
+    assert.equal(exports.quotaChipReady(state.routes.codex), false, 'the capsule stays muted with no number to show')
+  })
+
+  test('maps a Host refusal to localized copy without exposing server detail', async () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    ctx.connection.rpc.call = async () => ({
+      ok: false,
+      error: { code: 'signed-out', message: 'access_MUST_NOT_RENDER' },
+    })
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    await new Promise(resolve => setImmediate(resolve))
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.equal(state.usageFailure, 'signed-out')
+    const copy = exports.quotaFailureText(state.usageFailure, 'zh')
+    assert.match(copy, /尚未登录/u)
+    assert.doesNotMatch(copy, /MUST_NOT_RENDER/u)
+  })
+
+  test('aborts a hanging RPC on unload and ignores its late failure', async () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    let aborted = false
+    ctx.connection.rpc.call = (_channel, _method, _payload, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        aborted = true
+        reject(new Error('late abort'))
+      }, { once: true })
+    })
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    assert.equal(face.hooks.codexCard.getSnapshot().usageState, 'loading')
+    ctx.disposeEffects()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(aborted, true)
+    assert.equal(face.hooks.codexCard.getSnapshot().usageState, 'loading', 'disposed controller publishes no late failure')
+  })
+})
+
+describe('provider route state', () => {
+  test('maps provider ids onto the three route slots', () => {
+    const { PROVIDER_ROUTES } = materialize().exports
+    assert.equal(PROVIDER_ROUTES['openai-codex'], 'codex')
+    assert.equal(PROVIDER_ROUTES['opencode-go'], 'opencode')
+    assert.equal(PROVIDER_ROUTES['opencode-go-extra'], 'opencode')
+    assert.equal(PROVIDER_ROUTES['deepseek-official'], 'deepseek')
+    assert.equal(PROVIDER_ROUTES['deepseek'], 'deepseek')
+    assert.equal(PROVIDER_ROUTES['glm-5.3'], undefined)
+  })
+
+  test('each provider slot loads independently and keeps its own data', async () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    const calls = []
+    ctx.connection.rpc.call = async (_channel, _method, payload) => {
+      calls.push(payload.provider)
+      if (payload.provider === 'deepseek-official') {
+        return {
+          ok: true,
+          value: {
+            kind: 'balance',
+            provider: 'deepseek-official',
+            isAvailable: true,
+            balances: [{ currency: 'CNY', totalBalance: '110.00' }],
+            fetchedAt: '2026-08-20T12:00:00.000Z',
+          },
+        }
+      }
+      if (payload.provider === 'opencode-go') {
+        return {
+          ok: true,
+          value: {
+            kind: 'windows',
+            provider: 'opencode-go',
+            windows: [
+              { id: '5h', usedPercent: 10, remainingPercent: 90, resetsAt: 1_788_134_407 },
+              { id: '7d', usedPercent: 20, remainingPercent: 80, resetsAt: 1_788_134_407 },
+              { id: '1m', usedPercent: 30, remainingPercent: 70, resetsAt: 1_788_134_407 },
+            ],
+            fetchedAt: '2026-08-20T12:00:00.000Z',
+          },
+        }
+      }
+      return { ok: false, error: { code: 'unavailable' } }
+    }
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    await face.refreshUsage('opencode-go')
+    await face.refreshUsage('deepseek-official')
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.equal(state.routes.opencode.state, 'ready')
+    assert.equal(state.routes.deepseek.state, 'ready')
+    assert.equal(state.routes.opencode.usage.kind, 'windows')
+    assert.equal(state.routes.deepseek.usage.kind, 'balance')
+    assert.deepEqual(calls.slice(-2).sort(), ['deepseek-official', 'opencode-go'])
+  })
+
+  test('a busy provider slot coalesces a second refresh', async () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    let release
+    const gate = new Promise(resolve => { release = resolve })
+    let opencodeCalls = 0
+    ctx.connection.rpc.call = (_channel, _method, payload) => {
+      if (payload.provider === 'opencode-go') {
+        opencodeCalls++
+        return gate
+      }
+      return Promise.resolve({ ok: false, error: { code: 'unavailable' } })
+    }
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    const first = face.refreshUsage('opencode-go')
+    const second = face.refreshUsage('opencode-go')
+    assert.equal(opencodeCalls, 1, 'the second refresh joins the in-flight read instead of racing it')
+    release({
+      ok: true,
+      value: {
+        kind: 'windows',
+        provider: 'opencode-go',
+        windows: [{ id: '5h', usedPercent: 10, remainingPercent: 90 }],
+        fetchedAt: '2026-08-20T12:00:00.000Z',
+      },
+    })
+    await Promise.all([first, second])
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.equal(state.routes.opencode.state, 'ready')
+    assert.equal(state.routes.opencode.usage.windows[0].remainingPercent, 90)
+  })
+
+  test('capsule copy shows remaining, three OpenCode windows, and DeepSeek balance', () => {
+    const { quotaChipLabel, quotaChipReady, TEXT } = materialize().exports
+    const text = TEXT.zh
+    assert.equal(quotaChipLabel({ state: 'ready', usage: { kind: 'windows', windows: [{ id: '7d', usedPercent: 40, remainingPercent: 60 }] } }, text), '周剩余 60%')
+    assert.equal(quotaChipLabel({
+      state: 'ready',
+      usage: {
+        kind: 'windows',
+        windows: [
+          { id: '5h', usedPercent: 10, remainingPercent: 90 },
+          { id: '7d', usedPercent: 20, remainingPercent: 80 },
+          { id: '1m', usedPercent: 30, remainingPercent: 70 },
+        ],
+      },
+    }, text), '5h 90% · 7d 80% · 1m 70%')
+    assert.equal(quotaChipLabel({ state: 'ready', usage: { kind: 'balance', isAvailable: true, balances: [{ currency: 'CNY', totalBalance: '110.00' }] } }, text), '余额 ¥110.00')
+    assert.equal(quotaChipLabel({ state: 'failed', failure: 'no-credential', usage: undefined }, text), '额度 --')
+    assert.equal(quotaChipLabel({ state: 'loading', usage: undefined }, text), '额度 …')
+    assert.equal(quotaChipReady({ usage: undefined }), false)
+    assert.equal(quotaChipReady({ usage: { kind: 'windows', windows: [] } }), false)
+    assert.equal(quotaChipReady({ usage: { kind: 'windows', windows: [{ id: '7d' }] } }), true)
+    assert.equal(quotaChipReady({ usage: { kind: 'balance', balances: [] } }), false)
+    assert.equal(quotaChipReady({ usage: { kind: 'balance', balances: [{}] } }), true)
+  })
+
+  test('failure copy covers missing keys and missing subscriptions', () => {
+    const { quotaFailureText } = materialize().exports
+    assert.match(quotaFailureText('no-credential', 'zh'), /API Key/u)
+    assert.match(quotaFailureText('no-subscription', 'zh'), /订阅/u)
+    assert.match(quotaFailureText('no-credential', 'en'), /API key/u)
+  })
+
+  test('exposes the session model directory through the face when the service exists', () => {
+    const { exports } = materialize()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current: { provider: 'deepseek-official', model: 'deepseek-v4-flash' }, status: 'ready' }),
+        subscribe: () => () => {},
+      },
+      load: async () => {},
+    }
+    const ctx = fakeContext()
+    ctx.get = name => (name === 'connection' ? ctx.connection
+      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'modelDirectories' ? { directoryFor: () => directory }
+      : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    const entry = face.modelDirectoryFor('session-1')
+    assert.equal(typeof entry.getSnapshot, 'function')
+    assert.equal(entry.getSnapshot().current.provider, 'deepseek-official')
+  })
+
+  test('a session without a directory scope answers the empty stand-in', () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    ctx.get = name => (name === 'connection' ? ctx.connection
+      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'modelDirectories' ? { directoryFor: () => { throw new Error('no scope') } }
+      : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    const entry = face.modelDirectoryFor('session-1')
+    assert.equal(entry.getSnapshot().current, null)
+    assert.equal(typeof entry.ensureLoaded, 'function')
+    assert.doesNotThrow(() => { entry.ensureLoaded() })
+  })
+})
+
 describe('the model list', () => {
   /** Drive the controller through its face, with a capturing catalog wire. */
   function withCatalog(models) {
@@ -241,7 +583,7 @@ describe('the model list', () => {
       calls++
       return Promise.resolve(models())
     }
-    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     return { face, calls: () => calls }
@@ -421,7 +763,7 @@ describe('save', () => {
     }
     ctx.settingsScope = { bind: () => scope, describe: () => ({ acceptView: () => {} }) }
     ctx.api.settings.mutate = mutate
-    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
     exports.apply(ctx)
     return ctx.registrations[0].options.inject()
   }
@@ -507,7 +849,7 @@ describe('save', () => {
       hostRevision += 1
       return Promise.resolve({ result: { ok: true, value: { ns: settingsNs, user: {}, revision: hostRevision } } })
     }
-    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     face.edit('gpt-5.6-sol', '900k')
@@ -541,7 +883,7 @@ describe('save', () => {
       sent += 1
       return new Promise((resolve) => { answer = () => resolve({ result: { ok: true, value: { ns: settingsNs, user: {}, revision: 8 } } }) })
     }
-    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     face.edit('gpt-5.6-sol', '900k')
@@ -574,7 +916,7 @@ describe('save', () => {
       describe: () => ({ acceptView: () => { throw new Error('mirror refused') } }),
     }
     ctx.api.settings.mutate = () => Promise.resolve({ result: { ok: true, value: { ns: settingsNs, user: {}, revision: 8 } } })
-    ctx.get = name => (name === 'connection' ? { api: ctx.api } : name === 'remote' ? { $on: () => () => {} } : undefined)
+    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     face.edit('gpt-5.6-sol', '900k')
