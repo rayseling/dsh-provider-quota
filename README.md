@@ -188,6 +188,8 @@ npm test
 
 ## 开发
 
+> 动手改代码前请先看 **[AGENTS.md](./AGENTS.md)**:那里记着几个**出错时不报错**的坑(settings 的 `validate` 何时会跑、`ctx.settings` 什么时候会抛、pi-ai profile 少给字段会让图片静默消失),每一条都是从真实故障里查出来的。
+
 `dsh plugin ... add file:<path>` 是**拷贝**安装,而且重跑 `add` 并不会重新拷贝——pnpm 认为这个 `file:` 依赖没变,直接报 `Already up to date`,连版本号改了也一样。改了源码要真正生效,得先把那份拷贝删掉:
 
 ```sh
