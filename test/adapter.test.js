@@ -73,10 +73,12 @@ async function homeWithCredential(expired = true) {
 }
 
 /** @param {string} home @returns {object} an adapter over that home, with no attachment service. */
-const adapterOver = (home, overrides = {}) => adapterModule.createOpenAICodexLiteAdapter(
+const adapterOver = (home, overrides = {}, enabledModels) => adapterModule.createOpenAICodexLiteAdapter(
   new storeModule.OpenAICodexCredentialStore(home),
   () => undefined,
   overrides,
+  undefined,
+  enabledModels,
 )
 
 /** Take one stream far enough to resolve a credential, and report what happened. */
@@ -100,6 +102,23 @@ const tokenBody = (refresh = 'rt_ROTATED') => JSON.stringify({
 })
 
 describe('catalog sizing', { skip }, () => {
+  test('an enabled-model subset only narrows the advertised picker list', async () => {
+    const home = await freshHome()
+    const adapter = adapterOver(home, {}, [MODEL])
+    const listed = await adapter.listModels('openai-codex')
+    assert.deepEqual(listed.map(model => model.id), [MODEL])
+    await assert.doesNotReject(adapter.resolveModel('openai-codex', 'gpt-5.5'), 'hidden exact selections remain routable')
+  })
+
+  test('a live enabled-model thunk changes listings without rebuilding the adapter', async () => {
+    const home = await freshHome()
+    let enabled = [MODEL]
+    const adapter = adapterOver(home, {}, () => enabled)
+    assert.deepEqual((await adapter.listModels('openai-codex')).map(model => model.id), [MODEL])
+    enabled = ['gpt-5.5']
+    assert.deepEqual((await adapter.listModels('openai-codex')).map(model => model.id), ['gpt-5.5'])
+  })
+
   test('a context-window override reaches the resolved model', async () => {
     const adapter = adapterOver(await homeWithCredential(), { [MODEL]: { contextWindow: 1_000_000 } })
     const info = await adapter.resolveModel('openai-codex', MODEL)

@@ -70,6 +70,7 @@ async function boot(home, config, options = {}) {
 /** @returns {Promise<number>} the window the route currently publishes for `model`. */
 const windowOf = async (ctx, model = MODEL) =>
   (await ctx.llm.resolveModelInfo('openai-codex', model)).context.contextWindow
+const listedModelsOf = async ctx => (await ctx.llm.listModels('openai-codex')).map(model => model.id)
 
 describe('settings section', { skip }, () => {
   test('the composition entry serves as the base layer', async () => {
@@ -82,6 +83,68 @@ describe('settings section', { skip }, () => {
     const home = await freshHome()
     const ctx = await boot(home, {})
     assert.equal(await windowOf(ctx), CATALOG_WINDOW)
+  })
+
+  test('the default allowlist advertises every installed model', async () => {
+    const home = await freshHome()
+    const ctx = await boot(home, {})
+    const models = await listedModelsOf(ctx)
+    assert.ok(models.length > 1)
+    assert.ok(models.includes(MODEL))
+  })
+
+  test('a user allowlist narrows the picker but keeps hidden exact selections routable', async () => {
+    const home = await freshHome()
+    const ctx = await boot(home, {})
+    const all = await listedModelsOf(ctx)
+    await ctx.settings.update(plugin.settingsNs, { enabledModels: [MODEL] })
+    assert.deepEqual(await listedModelsOf(ctx), [MODEL])
+    assert.ok(all.includes('gpt-5.5'))
+    await assert.doesNotReject(ctx.llm.resolveModelInfo('openai-codex', 'gpt-5.5'))
+    await ctx.settings.replace(plugin.settingsNs, {})
+    assert.deepEqual(await listedModelsOf(ctx), all)
+  })
+
+  test('rejects an empty or repeating allowlist, and survives one the catalog outgrew', async () => {
+    const home = await freshHome()
+    const ctx = await boot(home, {})
+    await assert.rejects(ctx.settings.update(plugin.settingsNs, { enabledModels: [] }), /enabledModels|>= 1/u)
+    await assert.rejects(ctx.settings.update(plugin.settingsNs, { enabledModels: [MODEL, MODEL] }), /duplicate/u)
+    assert.deepEqual(await listedModelsOf(ctx), await listedModelsOf(await boot(await freshHome(), {})))
+    // A retired id is drift, not a configuration error. The seam runs
+    // `validate` when it resolves a namespace, so refusing one here would
+    // refuse the whole section on the next boot — including the sizing below.
+    await ctx.settings.update(plugin.settingsNs, {
+      enabledModels: [MODEL, 'gpt-9-retired'],
+      modelOverrides: { [MODEL]: { contextWindow: 300_000 } },
+    })
+    assert.deepEqual(await listedModelsOf(ctx), [MODEL], 'the id the catalog dropped selects nothing')
+    assert.equal(await windowOf(ctx), 300_000, 'and it does not take the unrelated sizing with it')
+  })
+
+  test('an allowlist the catalog outgrew entirely advertises the catalog, not an empty picker', async () => {
+    const home = await freshHome()
+    const ctx = await boot(home, {})
+    const all = await listedModelsOf(ctx)
+    await ctx.settings.update(plugin.settingsNs, { enabledModels: ['gpt-9-retired'] })
+    assert.deepEqual(await listedModelsOf(ctx), all)
+  })
+
+  test('a composition entry naming a model the catalog lacks still fails the load', async () => {
+    // The stored layer degrades; the deployment's own entry does not. It ships
+    // pinned beside the plugin, so a mismatch there is the operator's bug and
+    // has to be loud.
+    const home = await freshHome()
+    await assert.rejects(
+      boot(home, { enabledModels: ['gpt-9-nonexistent'] }),
+      /which the openai-codex catalog does not carry/u,
+    )
+  })
+
+  test('a composition allowlist is the default picker surface', async () => {
+    const home = await freshHome()
+    const ctx = await boot(home, { enabledModels: [MODEL] })
+    assert.deepEqual(await listedModelsOf(ctx), [MODEL])
   })
 
   test('the namespace is registered, which is what dispatches the browser card', async () => {

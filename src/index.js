@@ -11,9 +11,9 @@
  * first, and every credential stays host-side.
  * It registers no tools or search provider and changes no defaults.
  *
- * That field has three layers, each overriding the one above: the schema's
- * empty default, the composition entry (`cordis.patch.yml`, the deployment
- * baseline), and the user layer in `$DSH_HOME/settings.yaml`. The settings
+ * The editable fields have three layers, each overriding the one above: the
+ * schema's catalog default, the composition entry (the deployment baseline),
+ * and the user layer in `$DSH_HOME/settings.yaml`. The settings
  * seam owns the merge; a change there reaches the next request without a
  * restart, because the route reads its configuration through a thunk rather
  * than closing over the value it was composed with.
@@ -22,7 +22,7 @@
 
 import z from '@deepseek-ai/schemastery'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
-import { assertKnownModelIds, createOpenAICodexAccessResolver, createOpenAICodexLiteAdapter, openAICodexCatalogModelIds } from './adapter.js'
+import { assertEnabledModelIds, assertEnabledModelShape, assertKnownModelIds, createOpenAICodexAccessResolver, createOpenAICodexLiteAdapter, openAICodexCatalogModelIds, selectableModelIds } from './adapter.js'
 import { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } from './store.js'
 import {
   CodexUsageError,
@@ -38,7 +38,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 
-export { createOpenAICodexAccessResolver, createOpenAICodexLiteAdapter } from './adapter.js'
+export { assertEnabledModelIds, assertEnabledModelShape, createOpenAICodexAccessResolver, createOpenAICodexLiteAdapter, openAICodexCatalogModelIds, selectableModelIds } from './adapter.js'
 export { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER, openAICodexAuthPath } from './store.js'
 export { loginOpenAICodex, logoutOpenAICodex, openAICodexAuthStatus } from './auth.js'
 export {
@@ -91,9 +91,21 @@ export const settingsNs = settingsNamespace('llm-openai-codex-lite')
  * Responses request body carries no output-token cap, so an output size would
  * change neither what the seam publishes nor what reaches the server.
  *
- * Empty by default, so an unconfigured install keeps the catalog exactly.
+ * The model list defaults to every id in the installed catalog, so an
+ * unconfigured install advertises exactly what it did before.
+ *
+ * It narrows the ADVERTISED catalog, not just the picker. `listModels` is what
+ * the harness answers every catalog reader from — `buildModelCatalog` in
+ * `packages/host/apiproxy/src/api-proxy.ts`, which backs the gateway's `models`
+ * RPC and therefore every host-side model list — so a model unchecked here
+ * disappears from those enumerations too. Routing is untouched: a session
+ * already on a hidden model keeps working, and an exact provider/model request
+ * still resolves.
  */
 export const Config = z.object({
+  enabledModels: z.array(z.string().min(1)).min(1)
+    .default(openAICodexCatalogModelIds())
+    .description('Codex models this route advertises. It narrows the advertised catalog, not just the picker: the harness answers every catalog reader from the same list, so an unchecked model disappears from all of them. Exact persisted model selections remain routable.'),
   modelOverrides: z.dict(z.object({
     // The ceiling is `Number.MAX_SAFE_INTEGER` rather than a guess at how
     // large a window could plausibly get: past it, integers stop being
@@ -212,10 +224,17 @@ function httpBase(value) {
  * configuration error that must fail this load, exactly as it did before the
  * section existed.
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context carrying the LLM registry.
- * @param {{modelOverrides?: Record<string, {contextWindow?: number}>}} [config] - validated plugin config.
+ * @param {{enabledModels?: string[], modelOverrides?: Record<string, {contextWindow?: number}>}} [config] - validated plugin config.
  */
 export function apply(ctx, config) {
-  const entry = config ?? { modelOverrides: NO_OVERRIDES }
+  const catalogIds = openAICodexCatalogModelIds()
+  const supplied = config ?? {}
+  const entry = {
+    ...supplied,
+    modelOverrides: supplied.modelOverrides ?? NO_OVERRIDES,
+    enabledModels: supplied.enabledModels ?? catalogIds,
+  }
+  assertEnabledModelIds(entry.enabledModels, catalogIds)
   // The authoritative source: the resolved settings section while one is
   // attached, the composition entry before that and after a detach.
   let current = () => entry
@@ -231,6 +250,7 @@ export function apply(ctx, config) {
       () => ctx.get('attachments'),
       () => current().modelOverrides ?? NO_OVERRIDES,
       resolveAccessToken,
+      () => selectableModelIds(current().enabledModels, catalogIds),
     ),
   )
   // The three quota sources, keyed by the model route the browser reports.
@@ -296,20 +316,29 @@ export function apply(ctx, config) {
   })
   // The catalog ships with the package, so the known ids are fixed for this
   // install and the write-time check costs nothing per validation.
-  const catalogIds = openAICodexCatalogModelIds()
   try {
     installSettingsSection(ctx, settingsNs, Config, entry, {
       // Refuse the write rather than store a section that would size nothing:
       // the seam runs this before it persists, so a bad edit leaves both the
       // document and the serving route untouched, and the message it relays
       // is the one the loader would have thrown.
-      validate: (value) => { assertKnownModelIds(value?.modelOverrides ?? {}, catalogIds) },
+      validate: (value) => {
+        // Shape only for the allowlist: this hook also runs when the seam
+        // RESOLVES the namespace, so a catalog-membership check here turns the
+        // first boot after a pi-ai model rename into a refused section — and
+        // the refusal takes every `modelOverrides` window down with it. A
+        // retired id is dropped on read instead. `modelOverrides` stays strict:
+        // it names models the operator deliberately sized, so an id the
+        // catalog does not carry there is a configuration error, not drift.
+        assertEnabledModelShape(value?.enabledModels)
+        assertKnownModelIds(value?.modelOverrides ?? {}, catalogIds)
+      },
       setSource: (source) => { current = source },
       // Nothing derived from the section needs re-judging: the route set, its
       // display name and its retry policy do not depend on configuration, and
       // the adapter re-reads the thunk per operation.
       onChange: () => {
-        ctx.logger.debug('dsh-codex-lite: modelOverrides source changed; the next request resolves the new window')
+        ctx.logger.debug('dsh-codex-lite: model settings changed; the next request resolves the new model list and context window')
       },
     })
   } catch (error) {

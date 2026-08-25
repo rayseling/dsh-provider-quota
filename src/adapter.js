@@ -231,8 +231,17 @@ function boundedRefreshProvider(provider) {
  * @returns {string[]} every catalog model id.
  */
 export function openAICodexCatalogModelIds() {
-  return openaiCodexProvider().getModels().map(model => model.id)
+  // The catalog ships inside the installed package, so this list cannot change
+  // while the process lives. Without the cache the ids are recomputed — and
+  // the provider rebuilt behind them — once for the schema default at module
+  // load, again inside `apply`, and again for every call after that, each one
+  // walking the catalog JSON to produce a list that was already correct.
+  cachedCatalogIds ??= Object.freeze(openaiCodexProvider().getModels().map(model => model.id))
+  return cachedCatalogIds
 }
+
+/** @type {readonly string[] | undefined} */
+let cachedCatalogIds
 
 /**
  * Refuse overrides naming a model the catalog does not carry.
@@ -250,6 +259,94 @@ export function assertKnownModelIds(overrides, catalogIds) {
     `dsh-codex-lite: modelOverrides names ${unknown.map(id => JSON.stringify(id)).join(', ')},`
     + ` which the openai-codex catalog does not carry; known ids are ${catalogIds.join(', ')}`,
   )
+}
+
+/**
+ * Validate the user-facing model allowlist.
+ *
+ * The schema owns the array and non-empty checks; this hook owns the rules that
+ * depend on the installed pi-ai catalog. Keeping this beside the existing
+ * override check makes invalid settings fail before they reach the adapter.
+ * @param {unknown} enabledModels - selected model ids.
+ * @param {readonly string[]} catalogIds - every id the catalog carries.
+ */
+export function assertEnabledModelIds(enabledModels, catalogIds) {
+  assertEnabledModelShape(enabledModels)
+  const unknown = enabledModels.filter(id => !catalogIds.includes(id))
+  if (unknown.length > 0) {
+    throw new Error(
+      `dsh-codex-lite: enabledModels names ${unknown.map(id => JSON.stringify(id)).join(', ')},`
+      + ` which the openai-codex catalog does not carry; known ids are ${catalogIds.join(', ')}`,
+    )
+  }
+}
+
+/**
+ * The half of the allowlist check that does not depend on the catalog: a
+ * non-empty array with no repeats.
+ *
+ * This is the only half a stored section is held to. The catalog is not a
+ * fixed quantity across a plugin's life — a pi-ai upgrade renames or retires
+ * a Codex model without asking — and the settings seam runs its `validate`
+ * hook when it RESOLVES a namespace, not only when it writes one. So holding
+ * a stored allowlist to catalog membership means the first boot after such an
+ * upgrade throws inside `register`, the whole section is refused, and the
+ * user silently loses every unrelated `modelOverrides` context window along
+ * with it. A visibility list is a preference, not a contract: an id the
+ * catalog no longer carries is dropped on read by {@link selectableModelIds}.
+ * @param {unknown} enabledModels - selected model ids.
+ */
+export function assertEnabledModelShape(enabledModels) {
+  if (!Array.isArray(enabledModels) || enabledModels.length === 0) {
+    throw new Error('dsh-codex-lite: enabledModels must contain at least one model')
+  }
+  const seen = new Set()
+  const duplicate = []
+  for (const id of enabledModels) {
+    if (seen.has(id)) duplicate.push(id)
+    seen.add(id)
+  }
+  if (duplicate.length > 0) {
+    throw new Error(
+      `dsh-codex-lite: enabledModels contains duplicate ids ${duplicate.map(id => JSON.stringify(id)).join(', ')}`,
+    )
+  }
+}
+
+/**
+ * The ids a stored allowlist actually selects: those the installed catalog
+ * still carries. An allowlist naming nothing that exists any more selects
+ * everything, because a picker with no models in it is worse than a picker
+ * that forgot a preference.
+ * @param {unknown} enabledModels - the stored or configured allowlist.
+ * @param {readonly string[]} catalogIds - every id the catalog carries.
+ * @returns {readonly string[]} the ids to advertise.
+ */
+export function selectableModelIds(enabledModels, catalogIds) {
+  if (!Array.isArray(enabledModels)) return catalogIds
+  const live = enabledModels.filter(id => catalogIds.includes(id))
+  return live.length === 0 ? catalogIds : live
+}
+
+/**
+ * Adapter decorator that narrows the advertised picker list without narrowing
+ * exact-model resolution. Catalog membership is advisory in Harness: a hidden
+ * model already used by a session must remain routable.
+ */
+class SelectivePiAiAdapter extends PiAiAdapter {
+  /** @param {object} options @param {() => readonly string[]} enabledModels */
+  constructor(options, enabledModels) {
+    super(options)
+    this.enabledModels = enabledModels
+  }
+
+  /** @param {string} provider @returns {Promise<readonly object[]>} */
+  listModels(provider) {
+    return super.listModels(provider).then(models => {
+      const enabled = new Set(this.enabledModels())
+      return models.filter(model => enabled.has(model.id))
+    })
+  }
 }
 
 /**
@@ -376,11 +473,16 @@ export function createOpenAICodexAccessResolver(store) {
  *   operation, so a configuration change reaches the next request without a
  *   restart.
  * @param {() => Promise<string>} [resolveAccessToken] - shared OAuth access-token resolver.
+ * @param {readonly string[] | (() => readonly string[])} [enabledModels] - model ids advertised to pickers; exact resolution remains complete.
  * @returns {PiAiAdapter} the adapter to register for `openai-codex`.
  */
-export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOverrides = {}, resolveAccessToken) {
+export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOverrides = {}, resolveAccessToken, enabledModels) {
   const currentOverrides = typeof modelOverrides === 'function' ? modelOverrides : () => modelOverrides
   const provider = openaiCodexProvider()
+  const catalogIds = openAICodexCatalogModelIds()
+  const currentEnabledModels = typeof enabledModels === 'function'
+    ? enabledModels
+    : () => enabledModels === undefined ? catalogIds : enabledModels
   const profiles = createProfilesThunk(currentOverrides, requestProvider(provider), {
     provider: OPENAI_CODEX_PROVIDER,
     displayName: 'OpenAI Codex',
@@ -398,9 +500,9 @@ export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOve
   // The host can pass one resolver shared with the usage endpoint, so a token
   // rotation requested by either consumer is one operation under the file lock.
   const accessToken = resolveAccessToken ?? createOpenAICodexAccessResolver(store)
-  return new PiAiAdapter({
+  return new SelectivePiAiAdapter({
     profiles,
     resolveApiKey: accessToken,
     resolveAttachments,
-  })
+  }, currentEnabledModels)
 }
