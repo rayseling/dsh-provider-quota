@@ -307,6 +307,123 @@ describe('settings section', { skip }, () => {
     )
   })
 
+  test('the API-key routes read their pi-ai profile, not the defaults beside it', async () => {
+    // The other half of the `readSection` regression above. That one covers
+    // the flat native section; this one covers the shape it is easy to reach
+    // only in theory — `providers` keyed by route inside the pi-ai section —
+    // and it is the branch coverage proved never executes. Both endpoint and
+    // credential reference are configured away from their defaults, so a read
+    // that silently fell back would land on opencode.ai with the wrong key
+    // name rather than failing.
+    const home = await freshHome()
+    let registered
+    const connection = { rpc: { handle(channel, handler) { registered = handler; return async () => {} } } }
+    const credentials = {
+      resolve: async ref => (String(ref) === 'OPENCODE_PRIVATE_KEY' ? { value: 'sk-opencode-private' } : undefined),
+      readRecord: async () => undefined,
+    }
+    const ctx = await boot(home, {}, { connection, credentials })
+    const z = schemastery.default ?? schemastery
+    ctx.settings.register(
+      settings.settingsNamespace('llm-pi-ai'),
+      z.object({ providers: z.dict(z.object({ apiKeyEnv: z.string(), baseURL: z.string() })) }),
+      { base: { providers: { 'opencode-go': { apiKeyEnv: 'OPENCODE_PRIVATE_KEY', baseURL: 'https://gateway.internal.example/zen/go/v1/' } } } },
+    )
+    const calls = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), auth: init?.headers?.Authorization })
+      return new Response(JSON.stringify({ usage: { rolling: { percent: 12 } } }), { headers: { 'content-type': 'application/json' } })
+    }
+    try {
+      const answer = await registered('usage', { provider: 'opencode-go' }, new AbortController().signal)
+      assert.equal(answer.ok, true, `expected a quota window, got ${JSON.stringify(answer)}`)
+      assert.equal(calls.length, 1)
+      assert.equal(calls[0].url, 'https://gateway.internal.example/zen/go/v1/usage',
+        'the configured baseURL is where the read goes, trailing slash trimmed and /usage appended')
+      assert.equal(calls[0].auth, 'Bearer sk-opencode-private',
+        'the key must come from the configured apiKeyEnv, not from OPENCODE_GO_API_KEY')
+      assert.equal(JSON.stringify(answer).includes('sk-opencode'), false, 'no key may reach the browser')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  test('the pi-ai DeepSeek profile is read through providers, unlike the native one', async () => {
+    // `deepseek` and `deepseek-official` are two routes with two section
+    // shapes; the branch that tells them apart is the one below. Pinning only
+    // the native shape would leave a fallback to the PUBLIC endpoint looking
+    // correct for the pi-ai route.
+    const home = await freshHome()
+    let registered
+    const connection = { rpc: { handle(channel, handler) { registered = handler; return async () => {} } } }
+    const credentials = {
+      resolve: async ref => (String(ref) === 'DEEPSEEK_PI_KEY' ? { value: 'sk-pi-deepseek' } : undefined),
+      readRecord: async () => undefined,
+    }
+    const ctx = await boot(home, {}, { connection, credentials })
+    const z = schemastery.default ?? schemastery
+    ctx.settings.register(
+      settings.settingsNamespace('llm-pi-ai'),
+      z.object({ providers: z.dict(z.object({ apiKeyEnv: z.string(), baseURL: z.string() })) }),
+      { base: { providers: { deepseek: { apiKeyEnv: 'DEEPSEEK_PI_KEY', baseURL: 'https://deepseek.gateway.example/v1' } } } },
+    )
+    const calls = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), auth: init?.headers?.Authorization })
+      return new Response(JSON.stringify({ is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '5.00' }] }),
+        { headers: { 'content-type': 'application/json' } })
+    }
+    try {
+      const answer = await registered('usage', { provider: 'deepseek' }, new AbortController().signal)
+      assert.equal(answer.ok, true, `expected a balance, got ${JSON.stringify(answer)}`)
+      assert.equal(calls[0].url, 'https://deepseek.gateway.example/v1/user/balance',
+        'the nested profile decides the origin; a silent fallback would read api.deepseek.com')
+      assert.equal(calls[0].auth, 'Bearer sk-pi-deepseek')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  test('the catalog RPC answers the installed catalog, not whatever it was handed', async () => {
+    // `test/usage.test.js` builds the RPC directly and asserts it returns the
+    // ids it was constructed with — a unit test of the RPC, and an assertion
+    // about its own input as far as this plugin is concerned. Dropping the
+    // second argument at the call site in src/index.js leaves the whole suite
+    // green while every browser gets `{models: []}` and the card silently
+    // falls back to its "the full catalog did not load" path. This joins the
+    // two halves: boot the real plugin, ask over the real channel.
+    const home = await freshHome()
+    let registered
+    const connection = { rpc: { handle(channel, handler) { registered = handler; return async () => {} } } }
+    await boot(home, { enabledModels: [MODEL] }, { connection })
+    const answer = await registered('catalog', {}, new AbortController().signal)
+    assert.equal(answer.ok, true, `expected a catalog, got ${JSON.stringify(answer)}`)
+    assert.deepEqual(answer.value.models, plugin.openAICodexCatalogModelIds(),
+      'the card needs the UNFILTERED installed catalog, so a narrowed allowlist can still be widened again')
+    assert.ok(answer.value.models.length > 1, 'an empty list is what a dropped argument looks like')
+  })
+
+  test('a stored allowlist the catalog outgrew survives the STARTUP read, sizing intact', async () => {
+    // The incident this repository's first note is about happened on the read
+    // path, not the write path: every other case here edits through a booted
+    // context, while the section that vanished was one the seam RESOLVED at
+    // startup. `validate` runs there too, so a catalog-membership check inside
+    // it refuses the whole section on the first boot after a model rename —
+    // taking the unrelated `modelOverrides` window with it.
+    const home = await freshHome()
+    await writeFile(
+      join(home, 'settings.yaml'),
+      `${plugin.settingsNs}:\n  enabledModels:\n    - ${MODEL}\n    - gpt-9-retired\n  modelOverrides:\n    ${MODEL}:\n      contextWindow: 900000\n`,
+      { mode: 0o600 },
+    )
+    const ctx = await boot(home, {})
+    assert.equal(await windowOf(ctx), 900_000,
+      'the window stored beside a drifted model id must survive the boot that resolves them together')
+    assert.deepEqual(await listedModelsOf(ctx), [MODEL], 'and the retired id is dropped on read, not refused on load')
+  })
+
   test('no settings provider leaves the plugin on its composition entry', async () => {
     const home = await freshHome()
     const ctx = await boot(home, { modelOverrides: { [MODEL]: { contextWindow: 300_000 } } }, { settings: false })
