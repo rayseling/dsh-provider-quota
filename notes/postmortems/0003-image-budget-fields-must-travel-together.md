@@ -26,6 +26,9 @@
 
 ## 规则
 
+**home 在 [`AGENTS.md`](../../AGENTS.md) 的坑表**——那一行是每次开工都会读到的版本。
+下面是它装不下的边界条件。
+
 profile 里 `maxRequestImageBytes` / `requestImagePixelBudget` / `requestImageMaxBytes`
 **三个一起给**，而且要给真值——`undefined` 和不给是同一件事。
 官方默认值在 `packages/llm/llm-pi-ai/src/config.ts`（2048² 像素、1 MiB）。

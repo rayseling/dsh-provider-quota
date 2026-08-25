@@ -28,6 +28,9 @@ var settings = ctx.settings !== undefined ? ctx.settings : ctx.get('settings')
 
 ## 规则
 
+**home 在 [`AGENTS.md`](../../AGENTS.md) 的坑表**——那一行是每次开工都会读到的版本。
+下面是它装不下的边界条件。
+
 软读取一个**没有 inject 的服务**，只能用 `ctx.get(name)`。
 别写 `ctx.settings !== undefined ? ... : ctx.get(...)`——第一个分支就炸了。
 同理，`catch` 块里如果什么都不做，至少想清楚它可能吞掉的是什么。

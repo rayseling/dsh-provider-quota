@@ -36,3 +36,22 @@ ln -s ~/.dsh/profiles/node_modules node_modules
 ```
 
 `.gitignore` 里的 `node_modules` 不带尾斜杠正是为此：带斜杠的模式只匹配目录，这个软链会漏进 `git status`。
+
+## 一个装完必查的硬约束
+
+`package.json` 里声明了 `dsh.client`，`src/client.js` 就必须存在于**安装后的那份拷贝**里——
+声明了却找不到文件会让 `dsh web` 直接起不来。装完、重启前先确认：
+
+```sh
+ls -l ~/.dsh/profiles/web/node_modules/dsh-codex-lite/src/client.js
+```
+
+## 浏览器那半边为什么单独测
+
+`test/client.test.js` 把 `src/client.js` 当经典脚本执行，断言模块表契约（handoff id、
+只 require `react` 和 `@deepseek-ai/dsh-client-ui-primitives`、`inject` 为空）、
+卡片和会话胶囊两处注册、三个 provider 槽各自独立的读取状态机、以及编辑/保存的纯函数。
+它**不** import `src/index.js`——那样会把 pi-ai 和设置层一起拖进来，裸检出里整个文件直接加载失败（不是 skip）。
+两边的 namespace 靠 `test/settings.test.js` 里的反向断言钉在一起，那份测试本来就需要 peer 依赖。
+
+真实渲染这一半跑不到，只能人去看 `dsh web`——见 `AGENTS.md` 的「门盖不到的地方」。

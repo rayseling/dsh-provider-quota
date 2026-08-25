@@ -28,6 +28,9 @@
 
 ## 规则
 
+**home 在 [`AGENTS.md`](../../AGENTS.md) 的坑表**——那一行是每次开工都会读到的版本。
+下面是它装不下的边界条件。
+
 改这块的文案时别写成「只影响选择器」。README 和 schema description 都已按实际行为措辞。
 **别把「OpenAI 兼容 API 的 `/v1/models`」写回来。**
 

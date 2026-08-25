@@ -3,19 +3,21 @@
 > 给**任何**改动本仓库的人和 agent 看（`AGENTS.md` 是跨工具约定的文件名）。
 > `CLAUDE.md` 是指向这里的软链，别在那边另写一份。
 
-## 六条已经咬过人的坑
+## 八条已经咬过人的坑
 
 共同点：出错时没有异常、没有红字，只有一个看起来正常、其实内容已经被悄悄改掉的结果。
 每条都有完整复盘（症状 / 原因 / **为什么每层防线都没拦住**），点进去看。
 
 | # | 规则 | 守它的 |
 |---|---|---|
-| [1](notes/postmortems/0001-settings-validate-runs-on-read.md) | `validate` 每次**读取**时也跑；里面**不要放依赖外部世界的检查**（模型目录、环境变量、文件）。抛一次，整份 section 连同不相干的字段一起没。依赖外部状态的改成**读取时过滤** | `test/settings.test.js` 的 STARTUP 那条 |
-| [2](notes/postmortems/0002-property-accessor-without-inject.md) | 软读一个**没 inject 的服务**只能用 `ctx.get(name)`。`ctx.settings` 抛在同表达式的兜底**之前**，外层 `catch` 把它变成「没配置」 | `service-reads` 门 |
-| [3](notes/postmortems/0003-image-budget-fields-must-travel-together.md) | pi-ai profile 的三个图片预算字段**一起给真值**。少一个 → `NaN` → 每张图都被换成文本占位符 | `test/adapter.test.js`（行为）+ `image-budget`（裸检出兜底） |
-| [4](notes/postmortems/0004-listmodels-narrows-every-catalog-reader.md) | 收窄 `listModels` 影响**所有宿主侧目录查询**，文案别写成「只影响选择器」。**也别把编出来的 `/v1/models` 写回来** | `catalog-wording` 门 |
-| [5](notes/postmortems/0005-base-url-version-segment.md) | `OPENCODE_GO_BASE_URL` 是 **base**，后缀由 fetch 函数补，两边要在「`/v1` 归谁」上一致（目录本身不齐） | `test/usage.test.js` 的 composition 那组 |
+| [1](notes/postmortems/0001-settings-validate-runs-on-read.md) | `validate` 每次**读取**时也跑。里面**别查外部世界**（目录、环境变量、文件）——抛一次，整份 section 连同不相干的字段一起没 | `test/settings.test.js` 的 STARTUP 那条 |
+| [2](notes/postmortems/0002-property-accessor-without-inject.md) | 软读**没 inject 的服务**只能用 `ctx.get(name)`。`ctx.settings` 抛在同表达式的兜底**之前**，外层 `catch` 把它变成「没配置」 | `service-reads` 门 |
+| [3](notes/postmortems/0003-image-budget-fields-must-travel-together.md) | pi-ai profile 的三个图片预算字段**一起给真值**。少一个 → `NaN` → 每张图变成文本占位符 | `test/adapter.test.js` + `image-budget` |
+| [4](notes/postmortems/0004-listmodels-narrows-every-catalog-reader.md) | 收窄 `listModels` 影响**所有宿主侧目录查询**，别写成「只影响选择器」，也别把编出来的 `/v1/models` 写回来 | `catalog-wording` 门 |
+| [5](notes/postmortems/0005-base-url-version-segment.md) | `OPENCODE_GO_BASE_URL` 是 **base**，后缀由 fetch 补，两边要在「`/v1` 归谁」上一致（目录本身不齐） | `test/usage.test.js` composition 那组 |
 | [6](notes/postmortems/0006-fabricated-class-name-in-the-instructions.md) | 文档里带反引号的符号名是一句「这是真的」的断言。不确定就别加反引号 | `doc-symbols` 门 |
+| [7](notes/postmortems/0007-the-picker-that-saved-into-nothing.md) | 设置 key 的**写方和读方分处两模块**时 seam 不查两半是否都在。少一半：写入成功、落盘、无人读、界面报成功 | 无，只能靠人问 |
+| [8](notes/postmortems/0008-a-docstring-ate-the-export.md) | 漏一个 `*/`，注释会吞到**下一个** `*/`，中间的 `export` 被吃掉而语法合法 | `scanProblems`（在 `service-reads` / `deps` 里跑） |
 
 设计理由（为什么这么做、当时否决了什么）在 [`notes/implemented/`](notes/implemented/README.md)。
 
@@ -28,9 +30,8 @@ node scripts/check.mjs --only=<门名>    # 单跑一道
 node scripts/check.mjs --exemptions     # 列出每一条豁免
 ```
 
-十个纯 collector 加一个 `for` 循环，没有调度器：`identity` / `service-reads` / `deps` /
-`image-budget` / `catalog-wording` / `verify-workflow` / `doc-budget` / `doc-refs` /
-`doc-symbols` / `suite`。**每道门的机制、作用域、以及它证明不了什么，写在对应 collector 的头注释里**——这里不重抄。
+十个纯 collector 加一个 `for` 循环，没有调度器（门名跑 `--help` 就有）。
+**每道门的机制、作用域、以及它证明不了什么，写在对应 collector 的头注释里**——这里不重抄。
 
 `identity` 里最要命的一条：**`scripts.test` 必须还在跑 `node scripts/check.mjs`**。
 改掉它十道门当场全消失，而 `npm test` 照印绿色。兜底的是 `test/check.test.js` 那条自检
@@ -71,7 +72,7 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 不写出来，「全绿」就会被当成「全对」：
 
 - **`src/client.js` 占 `src/` 将近一半，实质上没有行为测试。** `test/client.test.js` **捕获**组件却从不调用
-  （`react` 在模块表里是 `{}`），把组件全换成 `throw` 它照样全绿。唯一验证手段是人去看真实的 `dsh web`。
+  （`react` 是 `{}`），把组件换成 `throw` 它照样全绿。唯一验证手段是人去看真实的 `dsh web`。
 - **`login` 的 OAuth 零执行**；Windows 权限位按平台 skip；`cordis.patch.yml` 只比字符串。
 - **`npm install` 装不起来**（未发布的传递 peer 会 404）。`deps` 管的是清单**诚实**，不是可安装性。
 - **CI 绿不代表文档引用解析得到**（那两道留在本地），也不代表 peer 测试跑过（在 CI 里它们从不执行）。
@@ -86,18 +87,16 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 
 四条常驻规则，理由见 [`what-a-gate-must-prove`](notes/implemented/2026-08-25-what-a-gate-must-prove.md)：
 
-1. **断言行为，不断言字段存在**（坑 3 就是被一条只检查数字存不存在的测试放过去的）。
-2. **断言外部可观测的事实**，不断言被测对象自己的说法；也别把常量当输入喂进去再断言它出现
-   ——那是在断言自己的输入，坑 5 就是这么绿的。
+1. **断言行为，不断言字段存在**（坑 3 就是这么放过去的）。
+2. **断言外部可观测的事实**，不断言被测对象自己的说法；也别把常量当输入喂进去再断言它出现（坑 5）。
 3. **新加门或回归测试先证明它会红**：塞回 bug → 变红 → 还原，汇报里写明。
 4. **修门时修机制，不修那个样本。** 收到绕过样本先问「这一类还有哪些写法」。
 
 ### 豁免
 
-源码 `// gate-exempt: <门名> <理由>`；Markdown 用**独占一行**的
-`<!-- gate-exempt: <门名> <理由> -->`。**理由必填**，豁免所在行和下一行，
-`npm test` 每次都把在生效的打出来（今天一条都没有）。
-**只从注释位置读**——否则每道门那句「要豁免就写 `// gate-exempt: …`」的报错文案会豁免掉它自己所在的行，
+源码 `// gate-exempt: <门名> <理由>`；Markdown 用**独占一行**的 `<!-- gate-exempt: … -->`。
+**理由必填**，管所在行和下一行，`npm test` 每次把在生效的连理由一起打出来。
+**只从注释位置读**——否则每道门那句「要豁免就写 `// gate-exempt: …`」的报错文案会豁免掉自己所在的行，
 而这一段会豁免掉 `AGENTS.md` 自己。两个都真的踩到过。
 
 ## 汇报与提交
