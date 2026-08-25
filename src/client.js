@@ -104,10 +104,9 @@
         selectAll: '全选',
         resetModels: '恢复默认模型',
         modelsLoading: '正在读取模型列表…',
-        modelsFailed: '模型列表没读到,重试',
-        modelsHint: '取消勾选的模型不会出现在会话的模型选择器中,但已有会话仍可继续使用。',
+        modelsHint: '取消勾选的模型不会出现在会话的模型选择器中，但已有会话仍可继续使用。',
         modelsEmpty: '至少要保留一个模型。',
-        modelsPartial: '完整目录没读到,下面这份可能不全——它来自当前已启用的列表,不一定包含这次安装带的每个模型。点上面的重试可以再取一次。',
+        modelsPartial: '完整目录没读到，下面这份可能不全——它来自当前已启用的列表，不一定包含这次安装带的每个模型。点上面的重试可以再取一次。',
         window: '上下文长度',
         placeholder: '模型默认',
         add: '添加',
@@ -166,7 +165,6 @@
         selectAll: 'Select all',
         resetModels: 'Reset model list',
         modelsLoading: 'Loading model list…',
-        modelsFailed: 'Model list unavailable — retry',
         modelsHint: 'Unchecked models disappear from new model pickers, but existing sessions can still use them.',
         modelsEmpty: 'Keep at least one model enabled.',
         modelsPartial: 'The full catalog did not load, so this list may be short — it comes from what is already enabled and need not carry every model this install ships. Retry above to fetch it again.',
@@ -767,7 +765,6 @@
         catalogFailed: this.catalogState === 'failed',
         catalogPartial: this.catalogPartial,
         selectedModels: selectedModels,
-        modelSelectionKind: this.modelSelection === undefined ? undefined : this.modelSelection.kind,
         modelSelectionDirty: modelSelectionDirty,
         modelSelectionInvalid: modelSelectionInvalid,
         modelCanReset: hasEnabledModels(snapshot.user) || this.modelSelection !== undefined,
@@ -1035,10 +1032,6 @@
     Controller.prototype.dispose = function () {
       var self = this
       this.disposed = true
-      // Leaving this at 'loading' would outlive the controller: `loadCatalog`
-      // refuses to start while it reads 'loading', so a remount that reuses
-      // this controller could never retry.
-      if (this.catalogState === 'loading') this.catalogState = 'idle'
       if (this.catalogAbort !== undefined) {
         this.catalogAbort.abort()
         this.catalogAbort = undefined
@@ -1437,7 +1430,7 @@
               className: 'dcl-reset',
               disabled: busy,
               onClick: props.retryCatalog,
-            }, text.modelsFailed)))
+            }, text.catalogFailed)))
       }
       var selected = new Set(state.selectedModels)
       var summary = text.modelSummary

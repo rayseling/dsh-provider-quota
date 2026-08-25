@@ -23,6 +23,19 @@ const skip = loaded.error === undefined ? false : `peer dependencies are not ins
 const [adapterModule, storeModule, llmModule] = loaded.modules ?? []
 
 const MODEL = 'gpt-5.6-sol'
+/**
+ * A second catalog id, taken from the installed catalog rather than written
+ * down. A literal here goes red the day pi-ai retires that model — which is
+ * drift, not a regression, and is exactly the failure mode notes/postmortems/
+ * 0001 is about. `MODEL` stays a literal because these tests are about how it
+ * is sized, and the assertions name it.
+ * @returns {string} an id from the catalog that is not `MODEL`.
+ */
+const otherModelId = () => {
+  const other = adapterModule.openAICodexCatalogModelIds().find(id => id !== MODEL)
+  assert.ok(other !== undefined, 'the installed catalog carries only one model')
+  return other
+}
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
 
@@ -107,7 +120,7 @@ describe('catalog sizing', { skip }, () => {
     const adapter = adapterOver(home, {}, [MODEL])
     const listed = await adapter.listModels('openai-codex')
     assert.deepEqual(listed.map(model => model.id), [MODEL])
-    await assert.doesNotReject(adapter.resolveModel('openai-codex', 'gpt-5.5'), 'hidden exact selections remain routable')
+    await assert.doesNotReject(adapter.resolveModel('openai-codex', otherModelId()), 'hidden exact selections remain routable')
   })
 
   test('a live enabled-model thunk changes listings without rebuilding the adapter', async () => {
@@ -115,8 +128,9 @@ describe('catalog sizing', { skip }, () => {
     let enabled = [MODEL]
     const adapter = adapterOver(home, {}, () => enabled)
     assert.deepEqual((await adapter.listModels('openai-codex')).map(model => model.id), [MODEL])
-    enabled = ['gpt-5.5']
-    assert.deepEqual((await adapter.listModels('openai-codex')).map(model => model.id), ['gpt-5.5'])
+    const other = otherModelId()
+    enabled = [other]
+    assert.deepEqual((await adapter.listModels('openai-codex')).map(model => model.id), [other])
   })
 
   test('a context-window override reaches the resolved model', async () => {

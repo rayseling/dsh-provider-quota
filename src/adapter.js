@@ -228,8 +228,12 @@ function boundedRefreshProvider(provider) {
  *
  * The catalog ships with the package, so the answer is fixed for an install
  * and worth reading once at load rather than once per validation.
- * @returns {string[]} every catalog model id.
+ *
+ * @type {readonly string[] | undefined} cachedCatalogIds
+ * @returns {readonly string[]} every catalog model id, frozen and cached.
  */
+let cachedCatalogIds
+
 export function openAICodexCatalogModelIds() {
   // The catalog ships inside the installed package, so this list cannot change
   // while the process lives. Without the cache the ids are recomputed — and
@@ -239,9 +243,6 @@ export function openAICodexCatalogModelIds() {
   cachedCatalogIds ??= Object.freeze(openaiCodexProvider().getModels().map(model => model.id))
   return cachedCatalogIds
 }
-
-/** @type {readonly string[] | undefined} */
-let cachedCatalogIds
 
 /**
  * Refuse overrides naming a model the catalog does not carry.
@@ -340,7 +341,18 @@ class SelectivePiAiAdapter extends PiAiAdapter {
     this.enabledModels = enabledModels
   }
 
-  /** @param {string} provider @returns {Promise<readonly object[]>} */
+  /**
+   * Narrow the advertised catalog to the allowlist.
+   *
+   * The filter is applied to whatever `super` returns, WITHOUT looking at
+   * `provider`. That is only safe because `apply` registers this adapter for
+   * `[OPENAI_CODEX_PROVIDER]` and nothing else: widen that array and this
+   * method starts filtering another provider's models against the Codex
+   * allowlist, silently, since a model missing from a catalog listing looks
+   * exactly like a model the operator unchecked. Widen the registration and
+   * you must gate this on `provider` in the same change.
+   * @param {string} provider @returns {Promise<readonly object[]>}
+   */
   listModels(provider) {
     return super.listModels(provider).then(models => {
       const enabled = new Set(this.enabledModels())
