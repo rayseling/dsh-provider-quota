@@ -51,6 +51,7 @@
     /** Trusted Harness Connection RPC carrying secret-free usage data. */
     var CODEX_USAGE_CHANNEL = '/dsh-codex-lite'
     var CODEX_USAGE_METHOD = 'usage'
+    var CODEX_CATALOG_METHOD = 'catalog'
     // Host worst case is 20s credential resolution plus a 15s usage fetch.
     var CODEX_USAGE_TIMEOUT_MS = 40_000
 
@@ -95,9 +96,18 @@
     var TEXT = {
       zh: {
         title: 'OpenAI Codex',
-        description: '查看周额度，并调整每个模型的上下文长度。',
+        description: '查看周额度，选择要显示的模型，并调整上下文长度。',
         expand: '展开设置',
         collapse: '收起设置',
+        models: '可选模型',
+        modelSummary: '已启用 {enabled}/{total}',
+        selectAll: '全选',
+        resetModels: '恢复默认模型',
+        modelsLoading: '正在读取模型列表…',
+        modelsFailed: '模型列表没读到,重试',
+        modelsHint: '取消勾选的模型不会出现在会话的模型选择器中,但已有会话仍可继续使用。',
+        modelsEmpty: '至少要保留一个模型。',
+        modelsPartial: '完整目录没读到,下面这份可能不全——它来自当前已启用的列表,不一定包含这次安装带的每个模型。点上面的重试可以再取一次。',
         window: '上下文长度',
         placeholder: '模型默认',
         add: '添加',
@@ -148,9 +158,18 @@
       },
       en: {
         title: 'OpenAI Codex',
-        description: 'View weekly usage and adjust each model’s context length.',
+        description: 'View weekly usage, choose visible models, and adjust context length.',
         expand: 'Show settings',
         collapse: 'Hide settings',
+        models: 'Visible models',
+        modelSummary: '{enabled}/{total} enabled',
+        selectAll: 'Select all',
+        resetModels: 'Reset model list',
+        modelsLoading: 'Loading model list…',
+        modelsFailed: 'Model list unavailable — retry',
+        modelsHint: 'Unchecked models disappear from new model pickers, but existing sessions can still use them.',
+        modelsEmpty: 'Keep at least one model enabled.',
+        modelsPartial: 'The full catalog did not load, so this list may be short — it comes from what is already enabled and need not carry every model this install ships. Retry above to fetch it again.',
         window: 'Context length',
         placeholder: 'model default',
         add: 'Add',
@@ -245,6 +264,56 @@
       if (section === null || typeof section !== 'object') return {}
       var overrides = section.modelOverrides
       return overrides !== null && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides : {}
+    }
+
+    /** @param {unknown} section @returns {string[]} selected model ids, or an empty list. */
+    function enabledModelsOf(section) {
+      if (section === null || typeof section !== 'object' || !Array.isArray(section.enabledModels)) return []
+      return section.enabledModels.filter(function (id, index, list) {
+        return typeof id === 'string' && id.length > 0 && list.indexOf(id) === index
+      })
+    }
+
+    /** @param {unknown} section @returns {boolean} whether the raw layer owns the allowlist. */
+    function hasEnabledModels(section) {
+      return section !== null && typeof section === 'object'
+        && Object.prototype.hasOwnProperty.call(section, 'enabledModels')
+        && Array.isArray(section.enabledModels)
+    }
+
+    /** @param {readonly string[]} left @param {readonly string[]} right @returns {boolean} same ids, regardless of order. */
+    function sameModelSet(left, right) {
+      if (left.length !== right.length) return false
+      var wanted = new Set(left)
+      if (wanted.size !== right.length) return false
+      return right.every(function (id) { return wanted.has(id) })
+    }
+
+    /** @param {readonly string[]} ids @param {readonly string[]} catalog @returns {string[]} catalog-ordered ids. */
+    function orderModelIds(ids, catalog) {
+      // Catalog order, and catalog membership. An id the installed catalog no
+      // longer carries has no checkbox in the grid, so carrying it into the
+      // write would resubmit something the user can neither see nor remove —
+      // and the host answers that with a raw seam sentence naming an id that
+      // is nowhere on screen. Dropping it here is what makes the next save the
+      // repair. An empty catalog means it has not loaded yet, and then the
+      // stored ids are all we know, so they pass through untouched.
+      if (catalog.length === 0) return ids.slice()
+      var wanted = new Set(ids)
+      var ordered = []
+      catalog.forEach(function (id) { if (wanted.has(id)) ordered.push(id) })
+      return ordered
+    }
+
+    /** @param {unknown} user @param {object|undefined} selection @returns {object[]|undefined} allowlist ops. */
+    function modelSelectionOps(user, selection) {
+      if (selection === undefined) return []
+      var held = hasEnabledModels(user)
+      if (selection.kind === 'unset') return held ? [{ op: 'unset', path: ['enabledModels'] }] : []
+      var ids = Array.isArray(selection.ids) ? selection.ids : []
+      if (ids.length === 0) return undefined
+      if (held && sameModelSet(enabledModelsOf(user), ids)) return []
+      return [{ op: 'set', path: ['enabledModels'], value: ids.slice() }]
     }
 
     /** @param {object} overrides @param {string} id @returns {number|undefined} the stored window. */
@@ -521,9 +590,10 @@
      * survives untouched.
      * @param {unknown} user - the user layer as the Host reported it.
      * @param {Record<string, string>} drafts - staged field contents, by model id.
-     * @returns {object[]|undefined} the ops, or nothing when a draft is not a window.
+     * @param {object|undefined} modelSelection - staged allowlist set/unset intent.
+     * @returns {object[]|undefined} the ops, or nothing when a draft is not a window or the selection is empty.
      */
-    function buildOps(user, drafts) {
+    function buildOps(user, drafts, modelSelection) {
       var stored = overridesOf(user)
       var ops = []
       var ids = Object.keys(drafts).sort()
@@ -539,7 +609,9 @@
         if (held && windowIn(stored, id) === parsed.value) continue
         ops.push({ op: 'set', path: ['modelOverrides', id, 'contextWindow'], value: parsed.value })
       }
-      return ops
+      var modelOps = modelSelectionOps(user, modelSelection)
+      if (modelOps === undefined) return undefined
+      return ops.concat(modelOps)
     }
 
     // ── the observable the card renders from ──
@@ -600,8 +672,10 @@
       // which is what advances the revision the next write fences on.
       this.mirror = mirror
       this.drafts = {}
+      this.modelSelection = undefined
       this.catalog = []
       this.catalogState = 'idle'
+      this.catalogPartial = false
       // One state slot per provider family; the usage/usageState/usageFailure
       // fields below mirror the Codex slot so the settings card keeps its reads.
       this.routes = {}
@@ -617,6 +691,9 @@
         resetRow: function (model) { self.edit(model, '') },
         removeRow: function (model) { self.removeRow(model) },
         addRow: function (model) { self.addRow(model) },
+        setModelEnabled: function (model, enabled) { self.setModelEnabled(model, enabled) },
+        selectAllModels: function () { self.selectAllModels() },
+        resetModels: function () { self.resetModels() },
         retryCatalog: function () { self.loadCatalog() },
         refreshUsage: function (provider) { return self.loadUsage(provider === undefined ? 'openai-codex' : provider, true) },
         loadUsage: function (provider, force) { return self.loadUsage(provider, force === true) },
@@ -638,25 +715,68 @@
       }
     }
 
+    /**
+     * The allowlist the card shows and writes back.
+     *
+     * Split out of {@link Controller#project} because a checkbox click needs
+     * only this array, and reaching it through `project()` rebuilt every row,
+     * badge and derived flag to throw all of them away.
+     *
+     * Every source lands on the same filter, so an id the installed catalog
+     * outgrew can neither pad the "{enabled}/{total}" summary with a checkbox
+     * that does not exist nor ride along into the next write. An allowlist
+     * that survives none of the catalog selects all of it — the same answer
+     * the host reaches for the same list.
+     * @param {object} [snapshot] - the settings snapshot, when the caller already read one.
+     * @returns {string[]} the selected ids, in catalog order.
+     */
+    Controller.prototype.selectedModels = function (snapshot) {
+      var view = snapshot === undefined ? this.scope.getSnapshot() : snapshot
+      var resolved = enabledModelsOf(view.value)
+      var base = enabledModelsOf(view.base)
+      var selected
+      if (this.modelSelection === undefined) {
+        selected = resolved.length > 0 ? resolved : base.length > 0 ? base : this.catalog
+      } else if (this.modelSelection.kind === 'unset') {
+        selected = base.length > 0 ? base : this.catalog
+      } else {
+        selected = this.modelSelection.ids
+      }
+      selected = orderModelIds(selected, this.catalog)
+      return selected.length === 0 && this.catalog.length > 0 ? this.catalog.slice() : selected
+    }
+
     /** @returns {object} the snapshot the card renders. */
     Controller.prototype.project = function () {
       var snapshot = this.scope.getSnapshot()
       var rows = rowsOf(snapshot.base, snapshot.user, this.drafts)
       var known = {}
       rows.forEach(function (row) { known[row.model] = true })
+      var selectedModels = this.selectedModels(snapshot)
+      var modelOps = modelSelectionOps(snapshot.user, this.modelSelection)
+      var modelSelectionInvalid = modelOps === undefined
+      var modelSelectionDirty = !modelSelectionInvalid && modelOps.length > 0
       return {
         available: snapshot.status === 'ready',
         writable: snapshot.writable === true,
         language: this.language(),
         rows: rows,
         addable: this.catalog.filter(function (id) { return known[id] !== true }),
+        catalog: this.catalog.slice(),
+        catalogState: this.catalogState,
         catalogFailed: this.catalogState === 'failed',
+        catalogPartial: this.catalogPartial,
+        selectedModels: selectedModels,
+        modelSelectionKind: this.modelSelection === undefined ? undefined : this.modelSelection.kind,
+        modelSelectionDirty: modelSelectionDirty,
+        modelSelectionInvalid: modelSelectionInvalid,
+        modelCanReset: hasEnabledModels(snapshot.user) || this.modelSelection !== undefined,
         usage: this.routes.codex.usage,
         usageState: this.routes.codex.state,
         usageFailure: this.routes.codex.failure,
         routes: this.routes,
-        dirty: Object.keys(this.drafts).length > 0,
-        invalid: rows.some(function (row) { return row.invalid }),
+        dirty: Object.keys(this.drafts).length > 0 || modelSelectionDirty,
+        invalid: rows.some(function (row) { return row.invalid }) || modelSelectionInvalid,
         saving: this.saving,
         failure: this.failure,
       }
@@ -686,12 +806,41 @@
 
     Controller.prototype.discard = function () {
       this.drafts = {}
+      this.modelSelection = undefined
+      this.failure = undefined
+      this.publish()
+    }
+
+    /** @param {string} model @param {boolean} enabled - stage one checkbox change. */
+    Controller.prototype.setModelEnabled = function (model, enabled) {
+      if (!this.catalog.includes(model)) return
+      var selected = this.selectedModels().slice()
+      var has = selected.includes(model)
+      if (enabled === has) return
+      if (!enabled && selected.length <= 1) return
+      selected = enabled ? selected.concat(model) : selected.filter(function (id) { return id !== model })
+      this.modelSelection = { kind: 'set', ids: orderModelIds(selected, this.catalog) }
+      this.failure = undefined
+      this.publish()
+    }
+
+    /** Stage an explicit all-model allowlist. */
+    Controller.prototype.selectAllModels = function () {
+      if (this.catalog.length === 0) return
+      this.modelSelection = { kind: 'set', ids: this.catalog.slice() }
+      this.failure = undefined
+      this.publish()
+    }
+
+    /** Stage removal of the user allowlist, returning to the composition default. */
+    Controller.prototype.resetModels = function () {
+      this.modelSelection = { kind: 'unset' }
       this.failure = undefined
       this.publish()
     }
 
     /**
-     * Load the catalog's model ids, so the add row can offer them.
+     * Load the catalog's model ids, so the add row and visibility list can offer them.
      *
      * The picker offers these ids and nothing else, so a catalog that does not
      * arrive is not a missing convenience but a picker with nothing in it —
@@ -699,27 +848,46 @@
      * model. It therefore fails loudly enough to be retried, and the button
      * says which of the two happened.
      */
-    Controller.prototype.loadCatalog = function () {
-      var self = this
-      if (this.catalogState === 'loading') return
-      this.catalogState = 'loading'
+    Controller.prototype.finishCatalog = function (ids, partial) {
+      if (this.disposed) return false
+      var catalog = enabledModelsOf({ enabledModels: ids })
+      if (catalog.length === 0) return false
+      this.catalog = catalog
+      this.catalogPartial = partial === true
+      this.catalogState = 'ready'
       this.publish()
+      return true
+    }
+
+    /**
+     * Fall back when the catalog RPC cannot answer.
+     *
+     * `baseCatalog` is the composition entry's allowlist — a NARROWING, not a
+     * catalog — so it must never be tried first: a deployment that ships one
+     * model would render exactly that one model and lock the user out of
+     * re-enabling the rest, which is the whole thing the RPC was added to
+     * prevent. `api.llm.models` is narrowed too (SelectivePiAiAdapter filters
+     * the very list it reads), so neither source is authoritative here. Take
+     * the union of what both know, mark the result partial so the card can
+     * say the list may be short, and keep the base as the last resort rather
+     * than the first.
+     */
+    Controller.prototype.loadLegacyCatalog = function (baseCatalog, reason, detail) {
+      var self = this
       var request
       try {
         request = this.api.llm.models({})
       } catch (error) {
-        this.failCatalog('unavailable', error)
+        if (baseCatalog.length > 0 && this.finishCatalog(baseCatalog, true)) return
+        this.failCatalog(reason || 'unavailable', detail || error)
         return
       }
-      // `.catch` rather than a second `then` argument: a rejection handler
-      // passed beside the fulfilment handler cannot see what that handler
-      // throws, and everything below unwraps a response this card does not
-      // control. A shape it did not expect would otherwise leave the picker
-      // stuck on "loading" and the failure only in the console.
       Promise.resolve(request).then(function (response) {
+        if (self.disposed) return
         var result = response === undefined ? undefined : response.result
         if (result === undefined || !result.ok) {
-          self.failCatalog('refused', result && result.error)
+          if (baseCatalog.length > 0 && self.finishCatalog(baseCatalog, true)) return
+          self.failCatalog(reason || 'refused', (result && result.error) || detail)
           return
         }
         var groups = result.value && result.value.groups
@@ -731,16 +899,52 @@
         }
         var models = group === undefined ? undefined : group.models
         if (!Array.isArray(models)) {
+          if (baseCatalog.length > 0 && self.finishCatalog(baseCatalog, true)) return
           self.failCatalog('carries no ' + OPENAI_CODEX_ROUTE + ' models', groups)
           return
         }
-        self.catalog = models
+        var ids = models
           .map(function (model) { return model === null || typeof model !== 'object' ? undefined : model.id })
           .filter(function (id) { return typeof id === 'string' && id.length > 0 })
-        self.catalogState = 'ready'
-        self.publish()
+        baseCatalog.forEach(function (id) { if (ids.indexOf(id) === -1) ids.push(id) })
+        if (!self.finishCatalog(ids, true)) self.failCatalog('carries no ' + OPENAI_CODEX_ROUTE + ' models', groups)
       }).catch(function (error) {
+        if (self.disposed) return
+        if (baseCatalog.length > 0 && self.finishCatalog(baseCatalog, true)) return
         self.failCatalog('request failed', error)
+      })
+    }
+
+    Controller.prototype.loadCatalog = function () {
+      var self = this
+      if (this.disposed || this.catalogState === 'loading') return
+      var baseCatalog = enabledModelsOf(this.scope.getSnapshot().base)
+      this.catalogState = 'loading'
+      this.publish()
+      var abort = new AbortController()
+      this.catalogAbort = abort
+      var timer = setTimeout(function () { abort.abort() }, CODEX_USAGE_TIMEOUT_MS)
+      var request
+      try {
+        request = this.connection.rpc.call(CODEX_USAGE_CHANNEL, CODEX_CATALOG_METHOD, {}, abort.signal)
+      } catch (error) {
+        clearTimeout(timer)
+        this.catalogAbort = undefined
+        this.loadLegacyCatalog(baseCatalog, 'unavailable', error)
+        return
+      }
+      Promise.resolve(request).then(function (response) {
+        if (self.disposed) return
+        var result = response === undefined ? undefined : response.result === undefined ? response : response.result
+        var models = result && result.ok && result.value && result.value.models
+        if (!Array.isArray(models) || !self.finishCatalog(models)) {
+          self.loadLegacyCatalog(baseCatalog, 'refused', result && result.error)
+        }
+      }).catch(function (error) {
+        if (!self.disposed) self.loadLegacyCatalog(baseCatalog, 'request failed', error)
+      }).finally(function () {
+        clearTimeout(timer)
+        if (self.catalogAbort === abort) self.catalogAbort = undefined
       })
     }
 
@@ -751,6 +955,10 @@
      * @param {unknown} detail - the underlying value, for the console line.
      */
     Controller.prototype.failCatalog = function (reason, detail) {
+      // A disposed controller has no store left to publish into and no reader
+      // for the warning; a late answer arriving after unmount is expected, not
+      // a fault worth a console line.
+      if (this.disposed) return
       console.warn('[dsh-codex-lite] model catalog ' + reason + ':', detail)
       this.catalogState = 'failed'
       this.publish()
@@ -827,6 +1035,14 @@
     Controller.prototype.dispose = function () {
       var self = this
       this.disposed = true
+      // Leaving this at 'loading' would outlive the controller: `loadCatalog`
+      // refuses to start while it reads 'loading', so a remount that reuses
+      // this controller could never retry.
+      if (this.catalogState === 'loading') this.catalogState = 'idle'
+      if (this.catalogAbort !== undefined) {
+        this.catalogAbort.abort()
+        this.catalogAbort = undefined
+      }
       USAGE_ROUTES.forEach(function (route) {
         var slot = self.routes[route]
         slot.generation++
@@ -839,10 +1055,16 @@
       var self = this
       if (this.saving) return Promise.resolve()
       var snapshot = this.scope.getSnapshot()
-      var ops = buildOps(snapshot.user, this.drafts)
+      var ops = buildOps(snapshot.user, this.drafts, this.modelSelection)
       var text = TEXT[this.language()]
       if (ops === undefined) {
-        this.failure = text.invalid
+        // `buildOps` refuses for two unrelated reasons — an unparseable window
+        // or an allowlist with nothing left in it — and telling someone who
+        // emptied the checkbox grid to "enter a whole number" is the wrong
+        // half of the truth.
+        this.failure = modelSelectionOps(snapshot.user, this.modelSelection) === undefined
+          ? text.modelsEmpty
+          : text.invalid
         this.publish()
         return Promise.resolve()
       }
@@ -877,6 +1099,7 @@
             // stranding the card mid-save.
           }
           self.drafts = {}
+          self.modelSelection = undefined
           self.failure = undefined
         } else {
           var error = response && response.result ? response.result.error : undefined
@@ -1188,6 +1411,76 @@
     }
 
     /**
+     * Render the allowlist editor. It is deliberately separate from the context
+     * rows: visibility is one top-level setting, while context fields remain
+     * per-model overrides and can include hidden models.
+     * @param {object} state - projected card state.
+     * @param {object} text - localized copy.
+     * @param {boolean} busy - whether writes are unavailable.
+     * @param {object} props - controller face callbacks.
+     * @returns {object} model selection section.
+     */
+    function modelSelectionElement(state, text, busy, props) {
+      var h = React.createElement
+      if (state.catalogState === 'loading' || state.catalogState === 'idle') {
+        return h('section', { className: 'dcl-models', 'aria-label': text.models },
+          h('div', { className: 'dcl-modelHead' },
+            h('span', { className: 'dcl-label' }, text.models),
+            h('span', { className: 'dcl-modelSummary', role: 'status' }, text.modelsLoading)))
+      }
+      if (state.catalogState === 'failed') {
+        return h('section', { className: 'dcl-models', 'aria-label': text.models },
+          h('div', { className: 'dcl-modelHead' },
+            h('span', { className: 'dcl-label' }, text.models),
+            h('button', {
+              type: 'button',
+              className: 'dcl-reset',
+              disabled: busy,
+              onClick: props.retryCatalog,
+            }, text.modelsFailed)))
+      }
+      var selected = new Set(state.selectedModels)
+      var summary = text.modelSummary
+        .replace('{enabled}', String(selected.size))
+        .replace('{total}', String(state.catalog.length))
+      var allSelected = state.catalog.length > 0 && state.catalog.every(function (id) { return selected.has(id) })
+      return h('section', { className: 'dcl-models', 'aria-label': text.models },
+        h('div', { className: 'dcl-modelHead' },
+          h('span', { className: 'dcl-label' }, text.models),
+          h('span', { className: 'dcl-modelSummary' }, summary)),
+        h('div', { className: 'dcl-modelActions' },
+          h('button', {
+            type: 'button',
+            className: 'dcl-reset',
+            disabled: busy || allSelected,
+            onClick: props.selectAllModels,
+          }, text.selectAll),
+          h('button', {
+            type: 'button',
+            className: 'dcl-reset',
+            disabled: busy || !state.modelCanReset,
+            onClick: props.resetModels,
+          }, text.resetModels)),
+        h('div', { className: 'dcl-modelGrid', role: 'group', 'aria-label': text.models },
+          state.catalog.map(function (id) {
+            var checked = selected.has(id)
+            return h('label', { key: id, className: checked ? 'dcl-modelOption dcl-modelOptionChecked' : 'dcl-modelOption' },
+              h('input', {
+                type: 'checkbox',
+                checked: checked,
+                disabled: busy || (checked && selected.size <= 1),
+                onChange: function (event) { props.setModelEnabled(id, event.target.checked) },
+              }),
+              h('span', { className: 'dcl-modelName' }, id))
+          })),
+        state.catalogPartial
+          ? h('p', { className: 'dcl-quotaFailure', role: 'status' }, text.modelsPartial)
+          : null,
+        h('p', { className: 'dcl-hint' }, text.modelsHint),
+        state.modelSelectionInvalid ? h('p', { className: 'dcl-invalid', role: 'alert' }, text.modelsEmpty) : null)
+    }
+
+    /**
      * @param {object} props - the injected face, with `hooks` bound to selectors.
      * @returns {object|null} the card, or nothing when this deployment does not serve the section.
      */
@@ -1211,6 +1504,8 @@
         ? text.quotaBadge.replace('{remaining}', formatPercent(weekly.remainingPercent))
         : text.weekly + (state.usageState === 'loading' ? ' …' : ' --')
       var quotaPanel = windowsPanelElement(state.routes.codex, text, function () { void props.refreshUsage() }, state.language)
+
+      var modelSelector = modelSelectionElement(state, text, busy, props)
 
       var fields = state.rows.map(function (row) {
         var fieldId = 'dcl-window-' + row.model
@@ -1304,6 +1599,7 @@
           ? h('div', { className: 'dcl-body' },
             state.writable ? null : h('p', { className: 'dcl-readOnly', role: 'status' }, text.readOnly),
             quotaPanel,
+            modelSelector,
             fields,
             addField,
             h('p', { className: 'dcl-note' }, text.note),
@@ -1363,6 +1659,17 @@
       'box-shadow:0 12px 32px rgba(0,0,0,.18)}',
       '.dcl-chipPopover .dcl-quota{margin:0;border:0;background:transparent}',
       '.dcl-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}',
+      '.dcl-models{margin:12px 0 2px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3)}',
+      '.dcl-modelHead{display:flex;align-items:center;gap:10px}',
+      '.dcl-modelSummary{font-size:12px;color:var(--dsw-alias-label-tertiary)}',
+      '.dcl-modelActions{display:flex;align-items:center;gap:12px;margin-top:8px}',
+      '.dcl-modelGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;margin-top:10px}',
+      '.dcl-modelOption{display:flex;align-items:center;gap:7px;min-width:0;padding:7px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;',
+      'font-size:12px;line-height:1.4;color:var(--dsw-alias-label-secondary);cursor:pointer}',
+      '.dcl-modelOptionChecked{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-module-platform)}',
+      '.dcl-modelOption input{accent-color:var(--dsw-alias-brand-primary);flex:none}',
+      '.dcl-modelOption input:disabled{cursor:default}',
+      '.dcl-modelName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dcl-quota{margin:12px 0 2px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;',
       'background:var(--dsw-alias-bg-layer-3)}',
       '.dcl-quotaHead{display:flex;align-items:center;gap:8px;margin-bottom:10px}',
@@ -1545,7 +1852,9 @@
       parseWindow: parseWindow,
       formatWindow: formatWindow,
       buildOps: buildOps,
+      modelSelectionOps: modelSelectionOps,
       rowsOf: rowsOf,
+      orderModelIds: orderModelIds,
       hintsOf: hintsOf,
       readUsageResult: readUsageResult,
       weeklyWindowOf: weeklyWindowOf,

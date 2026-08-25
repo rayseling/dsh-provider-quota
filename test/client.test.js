@@ -214,7 +214,7 @@ describe('activation', () => {
     const face = ctx.registrations[0].options.inject()
     assert.equal(typeof face.hooks.codexCard.getSnapshot, 'function')
     assert.equal(typeof face.hooks.codexCard.subscribe, 'function')
-    for (const name of ['edit', 'resetRow', 'removeRow', 'addRow', 'refreshUsage', 'loadUsage', 'modelDirectoryFor', 'save', 'discard']) {
+    for (const name of ['edit', 'resetRow', 'removeRow', 'addRow', 'setModelEnabled', 'selectAllModels', 'resetModels', 'refreshUsage', 'loadUsage', 'modelDirectoryFor', 'save', 'discard']) {
       assert.equal(typeof face[name], 'function', `face.${name}`)
     }
     assert.equal(ctx.registrations[0].options.inject(), face, 'the face identity is stable, so the renderer can cache it')
@@ -290,6 +290,94 @@ describe('formatWindow', () => {
   })
 })
 
+describe('an allowlist the catalog outgrew', () => {
+  test('drops ids no checkbox can show, and passes them through only while the catalog is unknown', () => {
+    const { orderModelIds } = materialize().exports
+    const catalog = ['gpt-5.4', 'gpt-5.5', 'gpt-5.6-sol']
+    assert.deepEqual(
+      orderModelIds(['gpt-5.6-sol', 'gpt-9-retired', 'gpt-5.4'], catalog),
+      ['gpt-5.4', 'gpt-5.6-sol'],
+      'catalog order, and nothing the grid cannot render',
+    )
+    // Resubmitting a dead id is what earns the raw seam rejection naming an id
+    // that is nowhere on screen; the next save has to be the repair instead.
+    assert.deepEqual(orderModelIds(['gpt-9-retired'], catalog), [])
+    // An empty catalog is "not loaded yet", not "nothing exists" — dropping
+    // the stored ids there would stage a write that wipes the allowlist.
+    assert.deepEqual(orderModelIds(['gpt-9-retired'], []), ['gpt-9-retired'])
+  })
+
+  test('the fallback catalog never presents the composition allowlist as the whole catalog', async () => {
+    // The base allowlist is a narrowing. Serving it as the catalog is what
+    // locks a one-model deployment out of re-enabling anything, which is the
+    // situation the catalog RPC exists to prevent.
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    ctx.scope.getSnapshot = () => ({
+      status: 'ready', value: {}, base: { enabledModels: ['gpt-5.5'] }, user: undefined,
+      revision: 3, writable: true, mode: 'host',
+    })
+    ctx.connection.rpc.call = async (_channel, method) => (method === 'catalog'
+      ? { ok: false, error: { code: 'method-not-found' } }
+      : { ok: false, error: { code: 'unavailable' } })
+    ctx.api.llm.models = () => Promise.resolve({
+      result: { ok: true, value: { groups: [{ id: 'openai-codex', models: [{ id: 'gpt-5.4' }, { id: 'gpt-5.6-sol' }] }], failures: [] } },
+    })
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.deepEqual(state.catalog, ['gpt-5.4', 'gpt-5.6-sol', 'gpt-5.5'],
+      'the live list, unioned with the base so nothing enabled vanishes')
+    assert.equal(state.catalogPartial, true, 'and it says the list may be short')
+  })
+})
+
+describe('catalog lifecycle on unload', () => {
+  test('a controller disposed mid-load aborts its request and stays quiet', async () => {
+    // A late answer arriving after unmount is expected, not a fault worth a
+    // console line and a publish into a torn-down store. `catalogState` is not
+    // asserted here on purpose: dispose deliberately stops publishing, so the
+    // last snapshot keeps whatever it said — the observable contract is the
+    // abort and the silence.
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    let settle
+    let aborted = false
+    // The catalog RPC refuses at once, so the fallback runs and the hang is in
+    // `api.llm.models` — which is the path whose late answer used to reach
+    // `failCatalog` after unmount.
+    ctx.connection.rpc.call = (_channel, method, _payload, signal) => {
+      if (method !== 'catalog') return Promise.resolve({ ok: false, error: { code: 'unavailable' } })
+      signal.addEventListener('abort', () => { aborted = true }, { once: true })
+      return Promise.resolve({ ok: false, error: { code: 'method-not-found' } })
+    }
+    ctx.api.llm.models = () => new Promise((resolve) => { settle = resolve })
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    assert.equal(face.hooks.codexCard.getSnapshot().catalogState, 'loading')
+    const warnings = []
+    const realWarn = console.warn
+    console.warn = (...args) => { warnings.push(args) }
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      ctx.disposeEffects()
+      settle({ result: { ok: false, error: { code: 'gone' } } })
+      await new Promise(resolve => setImmediate(resolve))
+      await new Promise(resolve => setImmediate(resolve))
+      assert.deepEqual(warnings, [], 'a late answer after unmount is expected, not a warning')
+    } finally {
+      console.warn = realWarn
+    }
+    let started = false
+    ctx.api.llm.models = () => { started = true; return Promise.resolve({ result: { ok: true, value: { groups: [], failures: [] } } }) }
+    face.retryCatalog()
+    assert.equal(started, false, 'and a disposed controller starts no new read')
+    assert.equal(aborted, false, 'the RPC answered before unload, so nothing was left to abort')
+  })
+})
+
 describe('weekly usage card state', () => {
   const result = {
     ok: true,
@@ -335,7 +423,7 @@ describe('weekly usage card state', () => {
     const ctx = fakeContext()
     ctx.connection.rpc.call = async (channel, method, payload, signal) => {
       calls.push({ channel, method, payload, signal })
-      return result
+      return method === 'catalog' ? { ok: true, value: { models: ['gpt-5.5', 'gpt-5.6-sol'] } } : result
     }
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
@@ -343,15 +431,17 @@ describe('weekly usage card state', () => {
     const state = face.hooks.codexCard.getSnapshot()
     assert.equal(state.usageState, 'ready')
     assert.deepEqual(state.usage, result.value)
-    assert.deepEqual(calls[0], {
+    const usageCall = calls.find(call => call.method === 'usage')
+    assert.deepEqual(usageCall, {
       channel: '/dsh-codex-lite',
       method: 'usage',
       payload: { provider: 'openai-codex', force: false },
-      signal: calls[0].signal,
+      signal: usageCall.signal,
     })
-    assert.ok(calls[0].signal instanceof AbortSignal)
+    assert.ok(usageCall.signal instanceof AbortSignal)
     await face.refreshUsage()
-    assert.deepEqual(calls[1].payload, { provider: 'openai-codex', force: true })
+    const usageCalls = calls.filter(call => call.method === 'usage')
+    assert.deepEqual(usageCalls[usageCalls.length - 1].payload, { provider: 'openai-codex', force: true })
   })
 
   test('an account with no weekly window reads as ready-and-empty, not as a failure', async () => {
@@ -675,6 +765,26 @@ describe('the model list', () => {
     assert.equal(state.catalogFailed, false)
   })
 
+  test('a composition subset does not hide models from the full catalog picker', async () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    const snapshot = { status: 'ready', value: {}, base: { enabledModels: ['gpt-5.5'] }, user: undefined, revision: 3, writable: true, mode: 'host' }
+    ctx.settingsScope = {
+      bind: spec => ({ ...ctx.scope, spec, getSnapshot: () => snapshot }),
+      describe: () => ({ acceptView: () => {} }),
+    }
+    ctx.connection.rpc.call = (_channel, method) => method === 'catalog'
+      ? Promise.resolve({ ok: true, value: { models: ['gpt-5.5', 'gpt-5.6-sol'] } })
+      : Promise.resolve({ ok: false, error: { code: 'unavailable' } })
+    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    await new Promise(resolve => setImmediate(resolve))
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.deepEqual(state.catalog, ['gpt-5.5', 'gpt-5.6-sol'])
+    assert.deepEqual(state.selectedModels, ['gpt-5.5'])
+  })
+
   test('a response shaped otherwise fails the picker instead of the page', async () => {
     // The picker is the only way to add a model, so a list that never arrives
     // must be distinguishable from having added them all. A throw inside the
@@ -822,6 +932,45 @@ describe('buildOps', () => {
     const { buildOps } = materialize().exports
     const ops = buildOps({}, { 'gpt-5.6-sol': '1m', 'gpt-5.4': '2k', 'gpt-5.5': '3k' })
     assert.deepEqual(ops.map(op => op.path[1]), ['gpt-5.4', 'gpt-5.5', 'gpt-5.6-sol'])
+  })
+
+  test('writes a model allowlist and combines it with context edits', () => {
+    const { buildOps } = materialize().exports
+    assert.deepEqual(buildOps({}, {}, { kind: 'set', ids: ['gpt-5.6-sol'] }), [
+      { op: 'set', path: ['enabledModels'], value: ['gpt-5.6-sol'] },
+    ])
+    assert.deepEqual(buildOps({ enabledModels: ['gpt-5.6-sol'] }, {}, { kind: 'set', ids: ['gpt-5.6-sol'] }), [])
+    assert.deepEqual(buildOps({ enabledModels: ['gpt-5.6-sol'] }, {}, { kind: 'unset' }), [
+      { op: 'unset', path: ['enabledModels'] },
+    ])
+    assert.deepEqual(buildOps({ enabledModels: ['gpt-5.6-sol'] }, { 'gpt-5.6-sol': '1m' }, { kind: 'set', ids: ['gpt-5.5'] }), [
+      { op: 'set', path: ['modelOverrides', 'gpt-5.6-sol', 'contextWindow'], value: 1_000_000 },
+      { op: 'set', path: ['enabledModels'], value: ['gpt-5.5'] },
+    ])
+  })
+
+  test('an emptied allowlist is told so, not told to enter a whole number', () => {
+    // `buildOps` refuses for two unrelated reasons — an unparseable window and
+    // an allowlist with nothing left in it — and `save` used to render the
+    // window sentence for both. `modelSelectionOps` is the discriminator it
+    // now asks, so that is what this pins; asserting only that the two strings
+    // differ would pass with the wiring still crossed.
+    const { modelSelectionOps, buildOps, TEXT } = materialize().exports
+    const user = { enabledModels: ['gpt-5.6-sol'] }
+    assert.equal(modelSelectionOps(user, { kind: 'set', ids: [] }), undefined,
+      'an empty allowlist is what routes save() to the model copy')
+    assert.deepEqual(modelSelectionOps(user, undefined), [],
+      'no staged selection must not be mistaken for an empty one')
+    // A bad window with a fine allowlist still refuses, and still through the
+    // other branch — so the two reasons stay distinguishable at the call site.
+    assert.equal(buildOps(user, { 'gpt-5.6-sol': 'not-a-number' }, undefined), undefined)
+    assert.notEqual(TEXT.zh.modelsEmpty, TEXT.zh.invalid)
+    assert.doesNotMatch(TEXT.en.modelsEmpty, /whole number/u)
+    assert.match(TEXT.en.invalid, /whole number/u, 'the window copy is still the window copy')
+  })
+
+  test('refuses an empty model allowlist', () => {
+    assert.equal(materialize().exports.buildOps({}, {}, { kind: 'set', ids: [] }), undefined)
   })
 })
 
