@@ -183,10 +183,17 @@ dsh plugin --profile web remove dsh-codex-lite
 ## 测试
 
 ```sh
-npm test        # node --test,无构建、无测试框架依赖
+npm test            # 八道门 + 整套测试(node --test),无构建、无测试框架依赖
+npm run test:raw    # 只跑 node --test,给紧编辑循环用
 ```
 
-`test/redact.test.js`、`test/usage.test.js` 和 `test/client.test.js` 只依赖 Node,任何检出里都能跑。store / adapter / CLI 三份测试需要 peer 依赖可解析,裸检出里会显式标记 skip,而不是伪装通过。
+`npm test` 跑的是 `scripts/check.mjs`——八个检查加整套测试。**单跑 `node --test` 会给出假绿**:
+`test/adapter.test.js`、`test/bin.test.js`、`test/settings.test.js`、`test/store.test.js` 四份需要 peer 依赖,
+缺了会整份 `describe` 跳过,而被跳过的 suite **既不进 `# tests` 也不进 `# skipped`**——
+裸检出里它报 `200 pass / skipped 0 / 退出码 0`,而完整检出是 272 条。`suite` 那道门就是为了堵这个:
+零 skip、文件清单和执行数都要和 `scripts/expected.json` 对得上。细节见 **[AGENTS.md](./AGENTS.md)**。
+
+`test/redact.test.js`、`test/usage.test.js`、`test/client.test.js` 和 `test/check.test.js` 只依赖 Node,任何检出里都能跑。
 
 要跑全部,**检出目录自己**得有一棵可解析的 `node_modules`:ESM 的裸导入从导入文件所在位置逐级向上找,与 cwd 无关,所以 `cd` 到装好插件的 profile 再跑没有用——测试文件仍在检出里。软链到 profile 共享的那棵树即可:
 

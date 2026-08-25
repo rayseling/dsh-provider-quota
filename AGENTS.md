@@ -1,104 +1,130 @@
 # 改这份代码之前，先读这几条
 
-> 这份文件是给**任何**改动本仓库的人和 agent 看的（`AGENTS.md` 是跨工具约定的文件名）。
-> `CLAUDE.md` 只是指向这里的一行指针，别在那边另写一份。
+> 给**任何**改动本仓库的人和 agent 看（`AGENTS.md` 是跨工具约定的文件名）。
+> `CLAUDE.md` 是指向这里的软链，别在那边另写一份。
 
-这里只记**已经咬过人、而且咬人时不出声**的坑。每一条都是在真实故障里查出来的，不是猜测。
-共同点是：出错时没有异常、没有红字，只有一个看起来正常、其实内容已经被悄悄改掉的结果。
+## 六条已经咬过人的坑
 
----
+共同点：出错时没有异常、没有红字，只有一个看起来正常、其实内容已经被悄悄改掉的结果。
+每条都有完整复盘（症状 / 原因 / **为什么每层防线都没拦住**），点进去看。
 
-## 1. settings 的 `validate` 会在每次「读取」时跑，不只是「写入」
+| # | 规则 | 守它的 |
+|---|---|---|
+| [1](notes/postmortems/0001-settings-validate-runs-on-read.md) | `validate` 每次**读取**时也跑；里面**不要放依赖外部世界的检查**（模型目录、环境变量、文件）。抛一次，整份 section 连同不相干的字段一起没。依赖外部状态的改成**读取时过滤** | `test/settings.test.js` 的 STARTUP 那条 |
+| [2](notes/postmortems/0002-property-accessor-without-inject.md) | 软读一个**没 inject 的服务**只能用 `ctx.get(name)`。`ctx.settings` 抛在同表达式的兜底**之前**，外层 `catch` 把它变成「没配置」 | `service-reads` 门 |
+| [3](notes/postmortems/0003-image-budget-fields-must-travel-together.md) | pi-ai profile 的三个图片预算字段**一起给真值**。少一个 → `NaN` → 每张图都被换成文本占位符 | `test/adapter.test.js`（行为）+ `image-budget`（裸检出兜底） |
+| [4](notes/postmortems/0004-listmodels-narrows-every-catalog-reader.md) | 收窄 `listModels` 影响**所有宿主侧目录查询**，文案别写成「只影响选择器」。**也别把编出来的 `/v1/models` 写回来** | `catalog-wording` 门 |
+| [5](notes/postmortems/0005-base-url-version-segment.md) | `OPENCODE_GO_BASE_URL` 是 **base**，后缀由 fetch 函数补，两边要在「`/v1` 归谁」上一致（目录本身不齐） | `test/usage.test.js` 的 composition 那组 |
+| [6](notes/postmortems/0006-fabricated-class-name-in-the-instructions.md) | 文档里带反引号的符号名是一句「这是真的」的断言。不确定就别加反引号 | `doc-symbols` 门 |
 
-**症状**：某次 `dsh plugin update` 之后，用户在卡片里设的上下文长度悄悄变回默认值，界面无提示，只有两行日志。
+设计理由（为什么这么做、当时否决了什么）在 [`notes/implemented/`](notes/implemented/README.md)。
 
-**原因**：`installSettingsSection` 的 `validate` 钩子，被 `SettingsRuntime.register` 在**解析这份设置时**就调用了
-（`packages/settings/settings/src/index.ts` 里 `resolved: deepFreeze(this.resolve(..., validate))`），也就是每次启动都会跑一遍。
-一旦它抛异常，**整份 section 被拒绝**——不只是出问题的那个字段。本插件 `src/index.js` 的 `catch` 接住它、
-退回组合配置，于是同一份设置里**毫不相干的其他字段也一起没了**。
-
-**规则**：`validate` 里**不要放依赖外部世界的检查**。模型目录会因为 pi-ai 升级而改名/下架，环境变量会变，
-文件会消失——这些都不是用户的错，却会让整份设置在下次启动时蒸发。
-
-- 依赖外部状态的（例：模型名单 `enabledModels` 是否还在目录里）→ **读取时过滤**，见 `selectableModelIds()`
-- 只依赖自身形状的（非空、不重复）→ 可以放 `validate`，见 `assertEnabledModelShape()`
-- 组合配置（`cordis.patch.yml`）里的值可以严格校验并大声报错：它随插件版本钉死，写错是部署方的 bug
-
-## 2. `ctx.settings` 对没 inject 的服务会抛，`ctx.get('settings')` 不会
-
-**症状**：三条 API-key 路由（opencode-go / deepseek / deepseek-official）的 `apiKeyEnv` 和 `baseURL`
-配了等于没配，永远走默认值。没有任何报错。
-
-**原因**：本插件只声明了 `inject = ['llm']`。属性访问器 `ctx.settings` 对未声明的服务直接抛
-`cannot get property "settings" without inject`，而且抛在同一个表达式里的 `?? ctx.get('settings')` 兜底**之前**。
-外面那层 `try/catch` 把它变成「没配置」，每一次调用都是。
-
-**规则**：软读取一个**没有 inject 的服务**，只能用 `ctx.get(name)`。别写 `ctx.settings !== undefined ? ... : ctx.get(...)`
-——第一个分支就炸了。同理，`catch` 块里如果什么都不做，至少想清楚它可能吞掉的是什么。
-
-## 3. 手搓 pi-ai profile 时，图片预算字段不能省
-
-**症状**：发图给 Codex 模型，模型回「我这边没收到图片内容」或「这张被系统省略了」。请求正常返回，不报错。
-
-**原因**：`PiAiAdapter` **总是**用 profile 的两个字段拼出图片策略对象传下去：
-
-```js
-{ maxPixels: profile.requestImagePixelBudget, maxBytes: profile.requestImageMaxBytes }
-```
-
-省略这两个字段**不会**退回宿主默认值——它传下去一对 `undefined`，而下游 `toPiContextWithImages` 的默认参数
-只在整个对象缺失时才生效。于是 `Math.min(bytes, undefined)` = `NaN`，预算比较全部落空，
-移除循环走完整个列表，**请求里每一张图都被换成文本占位符**。
-
-**规则**：profile 里 `maxRequestImageBytes` / `requestImagePixelBudget` / `requestImageMaxBytes`
-**三个一起给**。官方默认值在 `packages/llm/llm-pi-ai/src/config.ts`（2048² 像素、1 MiB）。
-`test/adapter.test.js` 里有一条回归测试：它拿真实 profile 跑 harness 自己的 offload 函数，
-断言图片过去之后**还是** image——别把它改成「断言这两个数字存在」，那样两个 bug 都在也照样绿。
-
-## 4. 收窄 `listModels` 不只影响模型选择器
-
-`SelectivePiAiAdapter.listModels` 过滤掉的模型，会从**所有目录查询**里消失，包括宿主 OpenAI 兼容 API 的
-`/v1/models`（`packages/host/apiproxy/src/api-proxy.ts` 的 `buildModelCatalog` 就是调 `ctx.llm.listModels`）。
-路由本身不受影响——按 provider+model 精确指定仍然解析得到。
-
-**规则**：改这块的文案时别写成「只影响选择器」。README 和 schema description 现在都已按实际行为措辞，
-改动时保持一致。
-
-## 5. 未公开契约：拼 URL 时注意版本段在哪一边
-
-`OPENCODE_GO_BASE_URL` 是 **base**，不是完整 URL——`fetchOpencodeUsage` 会给它接 `/usage`。
-同一个接法也作用在从路由设置里读来的 `baseURL` 上，所以两者必须在「`/v1` 归谁」上达成一致。
-当前常量带 `/v1`，因为装着的 pi-ai 目录给每个 opencode-go 模型标的 `baseUrl` 就是 `.../zen/go/v1`。
-
-Codex 的 `wham/usage` 和 OpenCode 的 `/usage` 都是未公开接口，上游改动时对应显示会变成「额度暂不可用」，
-不影响模型请求。
-
----
-
-## 测试
+## 门禁：`npm test`
 
 ```sh
-npm test        # node --test，无构建、无测试框架依赖
+npm test            # 十道门 + 整套测试；这是唯一算数的那个命令
+npm run test:raw    # 只跑 node --test，给紧编辑循环用——它不是证据
+node scripts/check.mjs --only=<门名>    # 单跑一道
+node scripts/check.mjs --exemptions     # 列出每一条豁免
 ```
 
-`redact` / `usage` / `client` 三份只依赖 Node，裸检出里都能跑；`store` / `adapter` / `settings` / `bin`
-需要 peer 依赖可解析，缺了会显式 skip 而不是伪装通过。要跑全部，在检出目录里软链一棵 node_modules：
+十个纯 collector 加一个 `for` 循环，没有调度器：`identity` / `service-reads` / `deps` /
+`image-budget` / `catalog-wording` / `verify-workflow` / `doc-budget` / `doc-refs` /
+`doc-symbols` / `suite`。**每道门的机制、作用域、以及它证明不了什么，写在对应 collector 的头注释里**——这里不重抄。
 
-```sh
-ln -s ~/.dsh/profiles/node_modules node_modules
-```
+`identity` 里最要命的一条：**`scripts.test` 必须还在跑 `node scripts/check.mjs`**。
+改掉它十道门当场全消失，而 `npm test` 照印绿色。兜底的是 `test/check.test.js` 那条自检
+（断言本仓库 `identity` 干净），所以绕过会让**它重定向过去的那个 runner** 变红。
 
-**写测试时**：断言「行为」而不是「字段存在」。上面第 3 条那个 bug 之所以能潜伏，
-就是因为一条只检查数字存不存在的测试一直是绿的。
+**CI 跑 `--bare`：除 `doc-refs` / `doc-symbols` 外全部**（这两道够不到 harness 就报红，留本地）。
+裸模式**反着定义**，新加的门默认进 CI，所以这里不写数字——跑的时候它自己打印。
+理由见 [`ci.yml`](.github/workflows/ci.yml) 头注释。
+
+### skip 不是通过，todo 也不是
+
+`node --test` 单独跑**会撒谎**。裸检出里它报 `# tests 204 / skipped 0`、退出码 0，
+而完整检出是 285 条（权威数字在 `scripts/expected.json`）。`describe(name, { skip }, fn)` 不展开子树，整个 suite 记成一行
+`ok N - … # SKIP`，里面的测试**既不进 `# tests` 也不进 `# skipped`**。
+
+- 那四份 skip 守卫（`adapter`/`bin`/`settings`/`store`）是给别人在裸检出里读代码用的，
+  不是给本仓库改动留的口子。**提交前必须零 skip。**
+- `{ todo: '...' }` 同样禁止：它照常跑、照常抛，而摘要报 `# fail 0`。门同时看
+  `# todo`、`# cancelled` 和任何一行 `not ok`。
+- 要跑全部，在检出目录里软链一棵 node_modules（ESM 裸导入从导入文件所在位置逐级向上找，与 cwd 无关）：
+  `ln -s ~/.dsh/profiles/node_modules node_modules`
+- `scripts/expected.json` 的 `tests` 是**唯一一个改一下就能把红变绿的数字**，
+  **只许和加/删测试同一个 commit 改**。改成字符串或删掉 key 也不行，门会拒。
+
+### 改了什么 → 跑什么
+
+| 改动 | 至少要跑 |
+|---|---|
+| `src/` 任何行为 | `npm test` |
+| `src/client.js` | `npm test` + **真开一次 `dsh web` 看**；commit message 里写明「手动验证：dsh web，截图 `.shots/<名>.png`」 |
+| `src/index.js` 的 settings 形状 | `npm test`，重点看 `test/settings.test.js`（启的是真 seam，不是桩） |
+| 文档 | `npm test`；引 `packages/…` 要设 `DSH_HARNESS_ROOT`，否则两道文档门**报红**（查不了就说查不了） |
+| `scripts/check.mjs` | `npm test`，并且**把 bug 塞回去看它变红**再还原 |
+| `package.json` / `cordis.patch.yml` | `npm test` |
+
+### 门盖不到的地方
+
+不写出来，「全绿」就会被当成「全对」：
+
+- **`src/client.js` 占 `src/` 将近一半，实质上没有行为测试。** `test/client.test.js` **捕获**组件却从不调用
+  （`react` 在模块表里是 `{}`），把组件全换成 `throw` 它照样全绿。唯一验证手段是人去看真实的 `dsh web`。
+- **`login` 的 OAuth 零执行**；Windows 权限位按平台 skip；`cordis.patch.yml` 只比字符串。
+- **`npm install` 装不起来**（未发布的传递 peer 会 404）。`deps` 管的是清单**诚实**，不是可安装性。
+- **CI 绿不代表文档引用解析得到**（那两道留在本地），也不代表 peer 测试跑过（在 CI 里它们从不执行）。
+  **两批 commit 落地之前 CI 是红的，这是预期**（`catalog-wording` 锚在 `enabledModels` 上，
+  `identity` 要 `CLAUDE.md` 是软链，都还没进历史）。
+- **裸模式的 skip 判据是按 reason 文本匹配的**：一条 flaky 测试只要把理由写成
+  「peer dependencies are not installed」就能混过去。这是为了不多维护一份 suite 名单而接受的代价。
+- **已知绕得过去的**：`ctx['settings']`、`const c = ctx; c.settings`、去掉反引号、
+  `Name.member` 的后半截。
+
+### 写测试和写门时
+
+四条常驻规则，理由见 [`what-a-gate-must-prove`](notes/implemented/2026-08-25-what-a-gate-must-prove.md)：
+
+1. **断言行为，不断言字段存在**（坑 3 就是被一条只检查数字存不存在的测试放过去的）。
+2. **断言外部可观测的事实**，不断言被测对象自己的说法；也别把常量当输入喂进去再断言它出现
+   ——那是在断言自己的输入，坑 5 就是这么绿的。
+3. **新加门或回归测试先证明它会红**：塞回 bug → 变红 → 还原，汇报里写明。
+4. **修门时修机制，不修那个样本。** 收到绕过样本先问「这一类还有哪些写法」。
+
+### 豁免
+
+源码 `// gate-exempt: <门名> <理由>`；Markdown 用**独占一行**的
+`<!-- gate-exempt: <门名> <理由> -->`。**理由必填**，豁免所在行和下一行，
+`npm test` 每次都把在生效的打出来（今天一条都没有）。
+**只从注释位置读**——否则每道门那句「要豁免就写 `// gate-exempt: …`」的报错文案会豁免掉它自己所在的行，
+而这一段会豁免掉 `AGENTS.md` 自己。两个都真的踩到过。
+
+## 汇报与提交
+
+- **只汇报你真正跑过的命令。** 没跑就写「未跑」，别写「应该跑 X / Y / Z」。
+- 说「这只是环境问题」不禁止，但要拆成可核查的项：确切命令、失败在哪一步、平台差异、其余检查是否仍绿。
+- **本地就是唯一的门**（这个仓库没有 CI），所以上一条不是礼节，是唯一的记录。
+
+## 语言与文档约定
+
+- 代码注释、JSDoc、错误字符串、门的报错文案——**英文**；`README.md` 和这份文件——**中文**。
+- 每个事实只写一处：**规则**在这里、**故事**在 `notes/postmortems/`、**理由**在 `notes/implemented/`、
+  **门的机制**在 collector 头注释、**用户视角**在 `README.md`。写之前先想清楚它属于哪一处。
+- 这里只放**每次都要遵守**的规则。一条坑一旦有门守着就缩到一行加一个链接——
+  这份文件应该随着门变多而**变短**，`doc-budget` 盯着它。
+- 每条禁令后面紧跟合法路径。只写「禁止 X」，agent 会自己发明变通方案。
+
+## 我们并没有禁止的事
+
+没写下来的默认，agent 会当成规则：
+
+- **没有禁止加依赖。** `devDependencies` 短、`node_modules` 是软链，不代表不许加。
+  判断标准：维护得好、有真实调用方、不把安装体积拖起来。手搓一个别人维护得更好的东西不是节俭。
+- **没有禁止改测试。** 但要付「解释」的代价：说清这个行为为什么过时了。
+- **没有禁止加 `scripts/`。** 门是普通代码：要测试、要注释、要能被删。
 
 ## 本地安装
 
-`dsh plugin add file:` 是**拷贝**安装，重跑 `add` 不会重新拷贝（pnpm 认为依赖没变），改了源码不会生效。
-迭代期请用 `link:`：
-
-```sh
-rm -rf ~/.dsh/profiles/web/node_modules/dsh-codex-lite
-dsh plugin --profile web add link:/path/to/dsh-codex-lite
-```
-
-改 `src/client.js` 的热更还需要在 harness 检出里另跑 `pnpm run dev:web`；否则仍要重启 `dsh web` 并刷新页面。
+`dsh plugin add file:` 是**拷贝**安装，改了源码不生效；迭代期用 `link:`。
+完整步骤和热更的坑见 [`notes/local-setup.md`](notes/local-setup.md)。

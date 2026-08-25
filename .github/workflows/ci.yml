@@ -1,0 +1,84 @@
+# Every gate except the two that need a harness checkout, plus the tests a
+# bare checkout can run.
+#
+# NO COUNT IS WRITTEN HERE, on purpose. `--bare` derives what it runs by
+# EXCLUDING `doc-refs` and `doc-symbols`, and prints the numbers itself, so a
+# gate added later is in CI by default and no number in this file can go stale.
+# An earlier version of this comment said "five of nine" in four separate
+# places; by the time anyone read it there were ten gates.
+#
+# WHY THOSE TWO ARE OUT. They verify that every `packages/...` path and every
+# symbol name the documents cite really exists in the deepseek-harness tree.
+# No harness checkout is reachable from here, and both refuse to report green
+# without one — reporting a check that never ran is the failure this whole gate
+# set exists to prevent. They run locally, where the harness sits beside the
+# checkout.
+#
+# WHY NO `npm install`. The manifest is not installable: `@deepseek-ai/dsh-llm-pi-ai`
+# has an unpublished transitive peer that 404s, and `--legacy-peer-deps` does
+# not help. Four test files guard their `describe` on whether the peers
+# resolve, so a bare run executes about 204 of the 276 tests and skips nine
+# suites. `--bare` accepts exactly those skips — matched on the REASON, not on
+# a list of names — and rejects every other one.
+#
+# WHAT GREEN HERE MEANS. The gates named in the run's own output, and the
+# node-only tests. It does NOT mean the documentation citations resolve, and it
+# does NOT mean the peer-dependent tests passed; those never ran.
+#
+# EXPECTED TO BE RED until both pending batches land: the model-allowlist
+# feature and the gate set that reads it. `catalog-wording` anchors on the
+# `enabledModels` schema, and `identity` requires CLAUDE.md to be the symlink.
+# Neither is in the history yet. Delete this paragraph once both have landed.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Read-only by default. A workflow that never needs to write should say so
+# rather than inherit whatever the repository default happens to be.
+permissions:
+  contents: read
+
+jobs:
+  bare-gates:
+    name: gates + node-only tests (no harness checkout, no npm install)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Nothing here reads history, and a token left on disk is a token
+          # something later can pick up.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Every gate that needs neither a harness checkout nor node_modules
+        run: node scripts/check.mjs --bare
+
+      - name: What this job did NOT check
+        if: always()
+        run: |
+          echo "Not checked here, run locally:"
+          echo "  doc-refs, doc-symbols — need a harness checkout to resolve packages/... citations"
+          echo "  the four peer-dependency-guarded suites — their tests never ran at all"
+          echo "Green above covers the gates the step named, and nothing more."
+
+  # The single required check. It runs even when the job above was skipped or
+  # cancelled, and treats both as failure: in branch protection a skipped job
+  # counts as a pass, which is the same false green this repository's whole
+  # gate set is built against, one layer up.
+  all-checks-passed:
+    name: all checks passed
+    if: always()
+    needs: [bare-gates]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every needed job succeeded
+        run: |
+          echo "bare-gates: ${{ needs.bare-gates.result }}"
+          test "${{ needs.bare-gates.result }}" = "success"

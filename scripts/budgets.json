@@ -1,0 +1,13 @@
+{
+  "_note": "Ceilings in CODE POINTS, not `wc -w`: these documents are Chinese, and the same bytes swing 8% between locales (LC_ALL=C 298 vs en_US.UTF-8 321 on one measured file), so a word budget would never trip. Over budget, the order is: move it out first, compress second, and only then raise the ceiling here — with the reason written down. Raising it silently is how the file everyone is supposed to read stops being read. Only files an agent reads EVERY session are budgeted; notes/ is reference material read on demand, and putting a ceiling on it would push incident stories back into the file that has one.",
+  "files": {
+    "AGENTS.md": {
+      "limit": 5600,
+      "why": "Was 9626. The six traps' narratives moved to notes/postmortems/, the gate rationale to notes/implemented/2026-08-25-what-a-gate-must-prove.md, and the install steps to notes/local-setup.md, leaving one line and a link each. RAISED 5400 -> 5600 when CI was added: a new subsystem brought two standing orders that belong in a file read every session — which gates CI runs and what its green does not cover — and this round had already spent its move and compress steps (the mechanism went to .github/workflows/ci.yml's header, three passages were tightened). 4000 was set aside deliberately at the start rather than met by pushing must-read rules into files nobody opens on demand. RATCHET, agreed at the time of that raise: 5600 is frozen. A future overrun may be met by MOVING or COMPRESSING only — not by raising this number again — unless another new subsystem arrives carrying rules that must be read every session, which is the one case that justified this raise. The 44-character margin that triggered it is the evidence that compression was already at its limit; a raise for anything less than a new subsystem means the file is being allowed to grow rather than being edited."
+    },
+    "README.md": {
+      "limit": 9800,
+      "why": "Currently 9615, held at today's size so it cannot grow. It still duplicates AGENTS.md on the skip trap, the node_modules symlink and file: vs link:. Once that is deduplicated the ceiling drops to 6000 and this note goes away."
+    }
+  }
+}

@@ -15,7 +15,8 @@
     "dsh-codex-lite": "src/bin.js"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node scripts/check.mjs",
+    "test:raw": "node --test"
   },
   "files": [
     "src",
@@ -42,5 +43,9 @@
     "@deepseek-ai/dsh-settings": "*",
     "@deepseek-ai/schemastery": "*",
     "@earendil-works/pi-ai": "^0.82.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-settings-file": "*"
   }
 }
