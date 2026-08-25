@@ -49,6 +49,27 @@ const STREAM_IDLE_TIMEOUT_MS = 300_000
 const MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024
 
 /**
+ * Per-image request budget: the pixel ceiling one image is downscaled to, and
+ * the encoded size the transcoder aims below.
+ *
+ * These are not optional the way the ceiling above is. `PiAiAdapter` always
+ * hands the conversion a policy object built from these two fields, so leaving
+ * them off the profile does not fall back to the host's defaults — it passes
+ * `{maxPixels: undefined, maxBytes: undefined}`, and the default parameter
+ * behind it only applies when the whole object is missing. The offload pass
+ * then measures every image as `Math.min(bytes, undefined)`, i.e. `NaN`; the
+ * budget comparisons go false, and it replaces every image in the request with
+ * a text placeholder. Nothing throws — the turn reaches the model with the
+ * pictures quietly gone, and the model answers that it received no image.
+ *
+ * Same copy-not-import caveat as above, for the same reason: `@deepseek-ai/
+ * dsh-llm-pi-ai` does not export its defaults. Drift costs image quality here;
+ * absence costs the image.
+ */
+const REQUEST_IMAGE_PIXEL_BUDGET = 2048 * 2048
+const REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
+
+/**
  * Ceiling for one credential resolution, refresh included. Reaching it fails
  * the request as a retryable timeout rather than leaving the turn suspended in
  * a phase the harness cannot cancel.
@@ -365,6 +386,8 @@ export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOve
     displayName: 'OpenAI Codex',
     streamIdleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
     maxRequestImageBytes: MAX_REQUEST_IMAGE_BYTES,
+    requestImagePixelBudget: REQUEST_IMAGE_PIXEL_BUDGET,
+    requestImageMaxBytes: REQUEST_IMAGE_MAX_BYTES,
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-codex-lite retryPolicy'),
     configuredMaxTokens: new Map(),
   })

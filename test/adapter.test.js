@@ -127,6 +127,42 @@ describe('catalog sizing', { skip }, () => {
     assert.ok(profile.maxRequestImageBytes > 0)
   })
 
+  test('the per-image budgets survive the offload pass instead of erasing the image', async () => {
+    // These two fields are load-bearing in a way absence does not announce.
+    // PiAiAdapter always builds the conversion policy from them, so omitting
+    // them does not inherit the host default — it sends `undefined`, the
+    // offload pass measures each image as `Math.min(bytes, undefined)` = NaN,
+    // every budget comparison goes false, and the request reaches the model
+    // with every image swapped for a text placeholder and nothing thrown.
+    //
+    // So this runs the harness's real offload function over the profile the
+    // plugin actually builds, and asserts an image block is still an image
+    // block on the far side. Pinning the numbers instead would pass just as
+    // happily with both fields missing.
+    const profile = adapterOver(await freshHome()).config.profiles().get('openai-codex')
+    const { offloadRequestImagesWithPolicy } = llmModule
+    const messages = [{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'what is in this image' },
+        { type: 'image', attachment: { attachmentId: 'att_1', mediaType: 'image/png', bytes: 40_000, width: 100, height: 100 } },
+      ],
+    }]
+    const converted = offloadRequestImagesWithPolicy(messages, {
+      representation: 'base64',
+      maxBytes: profile.maxRequestImageBytes,
+      byteQuantum: 1,
+      byteLength: ref => Math.min(ref.bytes, profile.requestImageMaxBytes),
+    })
+    assert.deepEqual(
+      converted[0].content.map(block => block.type),
+      ['text', 'image'],
+      'one small image under the budget must reach the wire as an image',
+    )
+    assert.ok(Number.isSafeInteger(profile.requestImagePixelBudget) && profile.requestImagePixelBudget > 0)
+    assert.ok(Number.isSafeInteger(profile.requestImageMaxBytes) && profile.requestImageMaxBytes > 0)
+  })
+
   test('an unconfigured route keeps the installed catalog', async () => {
     const adapter = adapterOver(await homeWithCredential())
     const models = await adapter.listModels('openai-codex')

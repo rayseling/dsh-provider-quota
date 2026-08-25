@@ -42,6 +42,8 @@ dsh plugin --profile web exec dsh-codex-lite logout
 
 **读图**:宿主自带的 `read_image` 在这条路由上照常可用,本插件不替换它。pi-ai 官方 catalog 给除 `gpt-5.3-codex-spark` 以外的每个 Codex 模型都声明了 `image` 输入,附件服务也按官方 pi-ai 路由的同一种接法接上了(`resolveAttachments: () => ctx.get('attachments')`)。spark 是纯文本模型,对它调 `read_image` 会被明确拒绝并提示换模型,而不是先读盘再在上游失败。
 
+> 0.4.0 之前有个 bug:profile 少写了 `requestImagePixelBudget` 和 `requestImageMaxBytes` 两个字段。适配器**总是**按这两个字段拼出图片策略对象传下去,所以缺字段并不会退回宿主默认值,而是传下去一对 `undefined`——转换层随后把每张图的大小算成 `NaN`,预算比较全部落空,于是把请求里**每一张图都换成了文本占位符**,全程不报错。表现就是模型回一句「我这边没收到图片内容」。升级到 0.4.0 即可。
+
 ## 查看额度
 
 会话界面和设置页都能看到,**跟着当前会话选中的模型走**,共用同一份数据。三个上游里只有 Codex 是本插件路由的,另外两个纯粹是「顺路读一下你已经配好的那把 key 还剩多少」——本插件不碰它们的模型请求:
