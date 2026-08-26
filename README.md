@@ -2,7 +2,7 @@
 
 在 DeepSeek Harness 里用 ChatGPT Plus/Pro 订阅跑 Codex 模型 —— 模型路由只做这一件事。
 
-外加一件小事:在会话里显示**当前模型所属账户**还剩多少——Codex 周额度、OpenCode Go 的 5h/7d/1m、DeepSeek 余额。后两个 provider 的模型不由本插件路由(那是 `llm-pi-ai` / `llm-deepseek` 的事),这里只读它们的余量。
+外加一件小事:在会话里显示**当前模型所属账户**还剩多少——Codex 的 5h/7d、OpenCode Go 的 5h/7d/1m、DeepSeek 余额。后两个 provider 的模型不由本插件路由(那是 `llm-pi-ai` / `llm-deepseek` 的事),这里只读它们的余量。
 
 八个源文件、零构建。官方件能用的全用官方件:
 
@@ -64,12 +64,12 @@ llm-openai-codex-lite:
 会话界面和设置页都能看到,**跟着当前会话选中的模型走**,共用同一份数据。三个上游里只有 Codex 是本插件路由的,另外两个纯粹是「顺路读一下你已经配好的那把 key 还剩多少」——本插件不碰它们的模型请求:
 
 - **会话界面**:会话标题右侧的胶囊按当前 provider 显示:
-  - `openai-codex` → `周剩余 60%`(本周已用/剩余、重置时间)
+  - `openai-codex` → `5h 90% · 7d 80%`(滚动 5 小时与 7 天两个窗口的**剩余**比例)
   - `opencode-go` / `opencode-go-extra` → `5h 90% · 7d 80% · 1m 70%`(三个窗口的**剩余**比例)
   - `deepseek-official` / `deepseek` → `余额 ¥110.00`(官方账户余额)
   - 其他 provider 或空白新会话:不显示,绝不把别的账户的数字挂上去。
   点开胶囊是完整面板(逐窗口剩余/已用/进度条/重置时间,或逐币种余额),带「刷新」。切换模型即时切换数据,无需刷新页面。
-- **设置页**:**设置 → 插件 → 插件配置 → OpenAI Codex** 卡片显示 Codex 周额度,展开后是同一份面板。
+- **设置页**:**设置 → 插件 → 插件配置 → OpenAI Codex** 卡片显示 Codex 的 5h/7d 额度,展开后是同一份面板。
 
 自动读取结果按账户+provider 在主机内存缓存 30 秒;手动刷新至少间隔 5 秒,防止连续请求把上游打到限流。会话头部胶囊挂在会话壳声明的 `conversation.session.header.utilities` 插槽上;不声明该插槽的旧部署只会少这个胶囊,卡片不受影响。当前模型来自会话的模型目录服务,插件只做软读取,服务缺失时也只是胶囊不显示。
 
@@ -83,7 +83,7 @@ llm-openai-codex-lite:
 
 OpenCode Go 返回「已用」百分比,展示层换算成剩余;DeepSeek 金额保持 API 返回的十进制字符串,不做浮点换算。浏览器通过 Harness Connection RPC 的 `/dsh-codex-lite` channel 拿到标准化后的结果;Connection 会先执行 Host / Origin / Fetch-Site trusted-host 栅栏。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
 
-Codex 与 OpenCode 的接口都是未公开契约:上游改动时对应显示会变成「额度暂不可用」,不影响模型请求;点「刷新」可以重试。若上游本来就没给这个账户返回周额度窗口,面板说明的是这件事,而不是一句「重试」——重试改变不了它。
+Codex 与 OpenCode 的接口都是未公开契约:上游改动时对应显示会变成「额度暂不可用」,不影响模型请求;点「刷新」可以重试。若上游本来就没给这个账户返回额度窗口,面板说明的是这件事,而不是一句「重试」——重试改变不了它。
 
 ## 配置:上下文长度
 

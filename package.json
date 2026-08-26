@@ -1,7 +1,7 @@
 {
   "name": "dsh-codex-lite",
   "version": "0.4.0",
-  "description": "ChatGPT-subscription Codex route for DeepSeek Harness: official pi-ai OAuth/adapter, owner-only credentials, terminal login, selectable model listings, provider-aware quota display (Codex weekly, OpenCode Go 5h/7d/1m, DeepSeek balance), and per-model context settings. No tools or default changes.",
+  "description": "ChatGPT-subscription Codex route for DeepSeek Harness: official pi-ai OAuth/adapter, owner-only credentials, terminal login, selectable model listings, provider-aware quota display (Codex 5h/7d, OpenCode Go 5h/7d/1m, DeepSeek balance), and per-model context settings. No tools or default changes.",
   "type": "module",
   "main": "src/index.js",
   "exports": {

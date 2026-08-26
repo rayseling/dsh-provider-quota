@@ -2,10 +2,11 @@
  * Server-side access to the private Codex subscription usage endpoint.
  *
  * OAuth material never crosses this module's Connection-RPC boundary: the
- * browser gets one normalized weekly window, while the bearer token and ChatGPT account id
- * stay in the host process. The upstream response is deliberately treated as
- * an additive/private contract — unknown fields are ignored and windows are
- * classified by duration rather than by their primary/secondary slot.
+ * browser gets normalized rolling (5h) and weekly (7d) windows, while the
+ * bearer token and ChatGPT account id stay in the host process. The upstream
+ * response is deliberately treated as an additive/private contract — unknown
+ * fields are ignored and windows are classified by duration rather than by
+ * their primary/secondary slot.
  * @module dsh-codex-lite/usage
  */
 
@@ -38,6 +39,7 @@ export const OPENAI_CODEX_USAGE_METHOD = 'usage'
 /** Read-only method returning the unfiltered installed Codex catalog to Settings. */
 export const OPENAI_CODEX_CATALOG_METHOD = 'catalog'
 
+const FIVE_HOUR_SECONDS = 5 * 60 * 60
 const WEEK_SECONDS = 7 * 24 * 60 * 60
 const WINDOW_TOLERANCE = 0.05
 const DEFAULT_TIMEOUT_MS = 15_000
@@ -102,30 +104,51 @@ export function normalizeCodexWindow(value, nowMs = Date.now()) {
   }
 }
 
-/** @param {number} seconds @returns {boolean} whether a duration is approximately one week. */
-function isWeeklyWindow(seconds) {
-  return seconds >= WEEK_SECONDS * (1 - WINDOW_TOLERANCE)
-    && seconds <= WEEK_SECONDS * (1 + WINDOW_TOLERANCE)
+/**
+ * Classify one window duration against the two window kinds current Codex
+ * accounts carry, within {@link WINDOW_TOLERANCE}: the rolling five-hour
+ * window and the weekly allowance.
+ * @param {number} seconds @returns {'5h'|'7d'|undefined}
+ */
+function codexWindowId(seconds) {
+  if (seconds >= FIVE_HOUR_SECONDS * (1 - WINDOW_TOLERANCE)
+    && seconds <= FIVE_HOUR_SECONDS * (1 + WINDOW_TOLERANCE)) return '5h'
+  if (seconds >= WEEK_SECONDS * (1 - WINDOW_TOLERANCE)
+    && seconds <= WEEK_SECONDS * (1 + WINDOW_TOLERANCE)) return '7d'
+  return undefined
 }
 
 /**
- * Reduce the private usage payload to the one window the card displays.
+ * Reduce the private usage payload to the windows the card displays — the
+ * rolling five-hour window and the weekly allowance — with `weekly` kept as
+ * an alias for callers that predate the second window.
  * @param {unknown} payload - decoded upstream JSON.
  * @param {number} [nowMs] - wall clock for reset-after fallback and fetchedAt.
- * @returns {{planType?: string, allowed?: boolean, limitReached?: boolean, weekly: ReturnType<typeof normalizeCodexWindow>|null, fetchedAt: string}}
+ * @returns {{planType?: string, allowed?: boolean, limitReached?: boolean, fiveHour: ReturnType<typeof normalizeCodexWindow>|null, weekly: ReturnType<typeof normalizeCodexWindow>|null, fetchedAt: string}}
  */
 export function normalizeOpenAICodexUsage(payload, nowMs = Date.now()) {
   if (!isRecord(payload)) {
     throw new CodexUsageError('invalid-response', 'OpenAI Codex usage response is not an object')
   }
   const rateLimit = isRecord(payload.rate_limit) ? payload.rate_limit : undefined
-  const primary = normalizeCodexWindow(rateLimit?.primary_window, nowMs)
-  const secondary = normalizeCodexWindow(rateLimit?.secondary_window, nowMs)
-  const weekly = [primary, secondary].find(window => window !== undefined && isWeeklyWindow(window.windowSeconds)) ?? null
+  const candidates = [
+    normalizeCodexWindow(rateLimit?.primary_window, nowMs),
+    normalizeCodexWindow(rateLimit?.secondary_window, nowMs),
+  ]
+  let fiveHour = null
+  let weekly = null
+  for (const window of candidates) {
+    // First recognized occurrence wins per kind: the same window in both
+    // slots is one quota, not two rows.
+    const id = window === undefined ? undefined : codexWindowId(window.windowSeconds)
+    if (id === '5h' && fiveHour === null) fiveHour = window
+    if (id === '7d' && weekly === null) weekly = window
+  }
   return {
     ...(typeof payload.plan_type === 'string' ? { planType: payload.plan_type } : {}),
     ...(typeof rateLimit?.allowed === 'boolean' ? { allowed: rateLimit.allowed } : {}),
     ...(typeof rateLimit?.limit_reached === 'boolean' ? { limitReached: rateLimit.limit_reached } : {}),
+    fiveHour,
     weekly,
     fetchedAt: new Date(nowMs).toISOString(),
   }
@@ -715,14 +738,21 @@ export function createProviderUsageService(options) {
       if (route === undefined) return { kind: 'none', provider }
       if (route.kind === 'codex') {
         var codexValue = await codex.get(force === true, signal)
-        var codexWindows = codexValue.weekly === null
-          ? []
-          : [{
-            id: '7d',
-            usedPercent: codexValue.weekly.usedPercent,
-            remainingPercent: codexValue.weekly.remainingPercent,
-            resetsAt: codexValue.weekly.resetsAt,
-          }]
+        var codexWindows = []
+        // Fixed order — rolling first, weekly second — so the chip reads the
+        // same sequence regardless of which upstream slot carried which.
+        if (codexValue.fiveHour !== null) codexWindows.push({
+          id: '5h',
+          usedPercent: codexValue.fiveHour.usedPercent,
+          remainingPercent: codexValue.fiveHour.remainingPercent,
+          resetsAt: codexValue.fiveHour.resetsAt,
+        })
+        if (codexValue.weekly !== null) codexWindows.push({
+          id: '7d',
+          usedPercent: codexValue.weekly.usedPercent,
+          remainingPercent: codexValue.weekly.remainingPercent,
+          resetsAt: codexValue.weekly.resetsAt,
+        })
         return {
           kind: 'windows',
           provider,

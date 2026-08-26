@@ -21,6 +21,7 @@ import {
 
 const NOW = Date.parse('2026-08-20T12:00:00Z')
 const WEEK = 7 * 24 * 60 * 60
+const FIVE_HOURS = 5 * 60 * 60
 
 function window(used, seconds, resetAt = 1_788_134_407) {
   return {
@@ -50,21 +51,33 @@ describe('usage normalization', () => {
       planType: 'plus',
       allowed: true,
       limitReached: false,
+      fiveHour: null,
       weekly: { usedPercent: 3, remainingPercent: 97, windowSeconds: WEEK, resetsAt: 1_788_134_407 },
       fetchedAt: '2026-08-20T12:00:00.000Z',
     })
   })
 
-  test('classifies by duration instead of assuming the secondary slot is weekly', () => {
-    const usage = normalizeOpenAICodexUsage(payload(window(15, 5 * 60 * 60), window(42, WEEK)), NOW)
+  test('classifies by duration and collects both windows without assuming slots', () => {
+    const usage = normalizeOpenAICodexUsage(payload(window(15, FIVE_HOURS), window(42, WEEK)), NOW)
+    assert.equal(usage.fiveHour.usedPercent, 15)
     assert.equal(usage.weekly.usedPercent, 42)
+    const swapped = normalizeOpenAICodexUsage(payload(window(9, WEEK), window(15, FIVE_HOURS)), NOW)
+    assert.equal(swapped.fiveHour.usedPercent, 15, 'the rolling window follows its duration, not its slot')
+    assert.equal(swapped.weekly.usedPercent, 9)
+    const duplicated = normalizeOpenAICodexUsage(payload(window(9, WEEK), window(42, WEEK)), NOW)
+    assert.equal(duplicated.weekly.usedPercent, 9, 'the same window in both slots is one quota, not two')
     const primaryWeekly = normalizeOpenAICodexUsage(payload(window(9, WEEK), window(60, 24 * 60 * 60)), NOW)
+    assert.equal(primaryWeekly.fiveHour, null)
     assert.equal(primaryWeekly.weekly.usedPercent, 9)
   })
 
   test('tolerates missing optional windows and does not mislabel a daily window', () => {
-    assert.equal(normalizeOpenAICodexUsage(payload(window(7, 24 * 60 * 60), null), NOW).weekly, null)
-    assert.equal(normalizeOpenAICodexUsage({ plan_type: 'free', rate_limit: null }, NOW).weekly, null)
+    const daily = normalizeOpenAICodexUsage(payload(window(7, 24 * 60 * 60), null), NOW)
+    assert.equal(daily.fiveHour, null)
+    assert.equal(daily.weekly, null)
+    const empty = normalizeOpenAICodexUsage({ plan_type: 'free', rate_limit: null }, NOW)
+    assert.equal(empty.fiveHour, null)
+    assert.equal(empty.weekly, null)
   })
 
   test('clamps percentages and derives reset time only when reset_at is absent', () => {
@@ -73,6 +86,7 @@ describe('usage normalization', () => {
       limit_window_seconds: WEEK,
       reset_after_seconds: 90,
     }, null), NOW)
+    assert.equal(usage.fiveHour, null)
     assert.deepEqual(usage.weekly, {
       usedPercent: 100,
       remainingPercent: 0,
@@ -289,13 +303,13 @@ describe('provider usage service and RPC', () => {
     fetchedAt: '2026-08-20T12:00:00.000Z',
   })
 
-  test('codex answers the windows union; unknown providers answer none', async () => {
+  test('codex answers both 5h and 7d windows; unknown providers answer none', async () => {
     const service = createProviderUsageService({
       resolveRoute: async provider => (provider === 'openai-codex' ? { kind: 'codex' } : undefined),
       codex: {
         resolveAccessToken: async () => 'access',
         readCredential: async () => ({ accountId: 'acc' }),
-        fetch: async () => new Response(JSON.stringify(payload(window(3, WEEK), null)), { status: 200 }),
+        fetch: async () => new Response(JSON.stringify(payload(window(12, FIVE_HOURS), window(3, WEEK))), { status: 200 }),
         now: () => NOW,
       },
     })
@@ -303,7 +317,10 @@ describe('provider usage service and RPC', () => {
     assert.equal(value.kind, 'windows')
     assert.equal(value.provider, 'openai-codex')
     assert.equal(value.planType, 'plus')
-    assert.deepEqual(value.windows, [{ id: '7d', usedPercent: 3, remainingPercent: 97, resetsAt: 1_788_134_407 }])
+    assert.deepEqual(value.windows, [
+      { id: '5h', usedPercent: 12, remainingPercent: 88, resetsAt: 1_788_134_407 },
+      { id: '7d', usedPercent: 3, remainingPercent: 97, resetsAt: 1_788_134_407 },
+    ])
     assert.deepEqual(await service.get('glm-5.3'), { kind: 'none', provider: 'glm-5.3' })
   })
 

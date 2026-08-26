@@ -1,7 +1,7 @@
 /**
  * dsh-codex-lite browser half: one card in Settings -> Plugins -> Plugin
  * configuration plus a session-header chip, both showing the host-normalized
- * Codex weekly quota; the card also edits the per-model context window this
+ * Codex 5h/7d quota; the card also edits the per-model context window this
  * plugin's settings namespace owns.
  *
  * The harness ships no generic schema-form renderer — the package that once
@@ -96,7 +96,7 @@
     var TEXT = {
       zh: {
         title: 'OpenAI Codex',
-        description: '查看周额度，选择要显示的模型，并调整上下文长度。',
+        description: '查看 5 小时与 7 天额度，选择要显示的模型，并调整上下文长度。',
         expand: '展开设置',
         collapse: '收起设置',
         models: '可选模型',
@@ -130,7 +130,6 @@
         offline: '没保存成功,连接中断了。请稍后重试。',
         derived: '{value} tokens · 默认预设下约 {trigger} 时开始压缩较早的对话',
         note: '这个数字只用于本机记账:会话能保留多少历史、什么时候开始压缩。模型真实的上下文上限不会因此变大,而且超出模型原生长度的输入会按更高的价格档计费。',
-        weekly: '周额度',
         quotaBadge: '周剩余 {remaining}%',
         windowsTitle: '额度',
         window5h: '5 小时',
@@ -145,19 +144,19 @@
         balanceGranted: '赠送 {value}',
         quotaNoKey: '没有找到该提供方的 API Key。',
         quotaNoSubscription: '这个 API Key 没有对应的订阅。',
-        quotaLoading: '正在读取周额度…',
-        quotaNoWeekly: 'OpenAI 没有为这个账户返回周额度窗口。',
+        quotaLoading: '正在读取额度…',
+        quotaNoWindows: 'OpenAI 没有为这个账户返回额度窗口。',
         quotaSignedOut: '尚未登录。请在主机终端运行 dsh plugin --profile web exec dsh-codex-lite login。',
         quotaAuth: 'Codex 登录已失效，请在主机终端重新登录。',
-        quotaTimeout: '读取周额度超时，请稍后重试。',
+        quotaTimeout: '读取额度超时，请稍后重试。',
         quotaRateLimited: '额度接口请求过于频繁，请稍后重试。',
-        quotaFailed: '没能读取周额度，请稍后重试。',
+        quotaFailed: '没能读取额度，请稍后重试。',
         refresh: '刷新',
         refreshing: '刷新中…',
       },
       en: {
         title: 'OpenAI Codex',
-        description: 'View weekly usage, choose visible models, and adjust context length.',
+        description: 'View 5-hour and 7-day usage, choose visible models, and adjust context length.',
         expand: 'Show settings',
         collapse: 'Hide settings',
         models: 'Visible models',
@@ -191,7 +190,6 @@
         offline: 'Not saved — the connection dropped. Please try again.',
         derived: '{value} tokens · with the default preset, compaction starts around {trigger}',
         note: 'This number is local bookkeeping only: how much history a conversation keeps, and when compaction starts. It does not raise the model’s real context limit, and input past the model’s native length is billed at a higher tier.',
-        weekly: 'Weekly usage',
         quotaBadge: 'Weekly {remaining}% left',
         windowsTitle: 'Usage',
         window5h: '5h',
@@ -206,13 +204,13 @@
         balanceGranted: 'Granted {value}',
         quotaNoKey: 'No API key configured for this provider.',
         quotaNoSubscription: 'This API key has no subscription.',
-        quotaLoading: 'Loading weekly usage…',
-        quotaNoWeekly: 'OpenAI did not return a weekly window for this account.',
+        quotaLoading: 'Loading usage…',
+        quotaNoWindows: 'OpenAI did not return a usage window for this account.',
         quotaSignedOut: 'Not signed in. Run dsh plugin --profile web exec dsh-codex-lite login on the host.',
         quotaAuth: 'The Codex sign-in has expired. Sign in again on the host.',
-        quotaTimeout: 'Weekly usage timed out. Try again shortly.',
+        quotaTimeout: 'Usage timed out. Try again shortly.',
         quotaRateLimited: 'The usage endpoint is rate limited. Try again shortly.',
-        quotaFailed: 'Could not load weekly usage. Try again shortly.',
+        quotaFailed: 'Could not load usage. Try again shortly.',
         refresh: 'Refresh',
         refreshing: 'Refreshing…',
       },
@@ -395,7 +393,7 @@
 
     /**
      * Validate the tiny, secret-free provider-usage union the Host RPC
-     * returns: windowed usage (Codex weekly, OpenCode 5h/7d/1m), a DeepSeek
+     * returns: windowed usage (Codex 5h/7d, OpenCode 5h/7d/1m), a DeepSeek
      * balance, or an explicit "nothing to show". Anything else is refused so a
      * provider never renders data shaped like another provider's.
      * @param {unknown} result - decoded Connection RPC result.
@@ -408,7 +406,7 @@
       if (value.kind === 'windows') {
         // An empty list is a real answer, not a malformed one: it is what the
         // host sends for an account the upstream reports no window for. It has
-        // to survive this gate, or the panel's "no weekly window" copy is
+        // to survive this gate, or the panel's "no windows" copy is
         // unreachable and that account reads as a transport failure instead.
         if (!Array.isArray(value.windows)) return undefined
         var windows = []
@@ -539,8 +537,8 @@
 
     /**
      * The capsule text for one provider family. Windows show the remaining
-     * percentage — the weekly window alone for Codex, all three for OpenCode —
-     * and DeepSeek shows the account balance. While loading or after a failure
+     * percentage — one or both Codex windows, all three for OpenCode — and
+     * DeepSeek shows the account balance. While loading or after a failure
      * the capsule reads "额度 …" / "额度 --" in the muted style.
      * @param {object} routeState - the per-route state slot.
      * @param {object} text - the active language copy.
@@ -1233,7 +1231,7 @@
 
     /**
      * The windowed-usage panel: the one markup the settings card (Codex
-     * weekly) and the session chip (Codex weekly, OpenCode 5h/7d/1m) share,
+     * 5h/7d) and the session chip (Codex 5h/7d, OpenCode 5h/7d/1m) share,
      * so the two surfaces cannot drift apart.
      * @param {object} routeState - one per-route state slot.
      * @param {object} text - the active language copy.
@@ -1255,7 +1253,7 @@
             quotaFailureText(routeState.failure, language)))
         }
       } else if (routeState.state === 'ready') {
-        content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' }, text.quotaNoWeekly)]
+        content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' }, text.quotaNoWindows)]
       } else {
         content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' },
           quotaFailureText(routeState.failure, language))]
@@ -1492,10 +1490,10 @@
       var text = TEXT[state.language]
       var h = React.createElement
       var busy = !state.writable || state.saving
-      var weekly = weeklyWindowOf(state.usage)
-      var quotaBadge = weekly !== undefined
-        ? text.quotaBadge.replace('{remaining}', formatPercent(weekly.remainingPercent))
-        : text.weekly + (state.usageState === 'loading' ? ' …' : ' --')
+      // The collapsed badge reads the same windows the session chip does,
+      // so an account with both windows shows both, and one with only the
+      // weekly allowance keeps the single-window copy.
+      var quotaBadge = quotaChipLabel(state.routes.codex, text)
       var quotaPanel = windowsPanelElement(state.routes.codex, text, function () { void props.refreshUsage() }, state.language)
 
       var modelSelector = modelSelectionElement(state, text, busy, props)
@@ -1585,7 +1583,7 @@
         h('span', { className: 'dcl-headText' },
           h('span', { className: 'dcl-name' }, text.title),
           h('span', { className: 'dcl-description' }, text.description)),
-        h('span', { className: weekly ? 'dcl-quotaBadge' : 'dcl-quotaBadge dcl-quotaBadgeMuted' }, quotaBadge),
+        h('span', { className: quotaChipReady(state.routes.codex) ? 'dcl-quotaBadge' : 'dcl-quotaBadge dcl-quotaBadgeMuted' }, quotaBadge),
         state.dirty ? h('span', { className: 'dcl-pending' }, text.unsaved) : null,
         React.createElement(ChevronIcon, { className: isOpen ? 'dcl-chevron dcl-chevronOpen' : 'dcl-chevron' })),
         isOpen

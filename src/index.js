@@ -5,7 +5,7 @@
  * owner-only credential file under `$DSH_HOME`. Sign-in is the terminal
  * `dsh-codex-lite login` command. In a Web composition it also registers one
  * read-only Connection RPC that answers the account-level usage of the
- * session's current model route — Codex weekly windows, OpenCode Go 5h/7d/1m
+ * session's current model route — Codex 5h/7d windows, OpenCode Go 5h/7d/1m
  * windows, or the official DeepSeek balance — for the Settings card and the
  * session-header chip; Connection applies the Harness trusted-host fence
  * first, and every credential stays host-side.

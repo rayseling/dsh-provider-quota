@@ -1,5 +1,5 @@
 # dsh-codex-lite bundle patch: insert the ChatGPT-subscription model route,
-# its Settings card, and the host-side provider-aware quota read (Codex weekly,
+# its Settings card, and the host-side provider-aware quota read (Codex 5h/7d,
 # OpenCode Go 5h/7d/1m, DeepSeek balance). Deliberately unchanged:
 # agent-default-model (pick an openai-codex model per session or in Settings),
 # the web-search provider, and every tool. Sign in from a terminal:

@@ -378,14 +378,17 @@ describe('catalog lifecycle on unload', () => {
   })
 })
 
-describe('weekly usage card state', () => {
+describe('usage card state', () => {
   const result = {
     ok: true,
     value: {
       kind: 'windows',
       provider: 'openai-codex',
       planType: 'plus',
-      windows: [{ id: '7d', usedPercent: 3, remainingPercent: 97, resetsAt: 1_788_134_407 }],
+      windows: [
+        { id: '5h', usedPercent: 12, remainingPercent: 88, resetsAt: 1_788_134_407 },
+        { id: '7d', usedPercent: 3, remainingPercent: 97, resetsAt: 1_788_134_407 },
+      ],
       fetchedAt: '2026-08-20T12:00:00.000Z',
     },
   }
@@ -417,7 +420,7 @@ describe('weekly usage card state', () => {
     assert.equal(readUsageResult({ ok: false, error: { code: 'auth' } }), undefined)
   })
 
-  test('loads on mount, publishes weekly usage, and force-refreshes on demand', async () => {
+  test('loads on mount, publishes 5h/7d usage, and force-refreshes on demand', async () => {
     const calls = []
     const { exports } = materialize()
     const ctx = fakeContext()
@@ -444,9 +447,9 @@ describe('weekly usage card state', () => {
     assert.deepEqual(usageCalls[usageCalls.length - 1].payload, { provider: 'openai-codex', force: true })
   })
 
-  test('an account with no weekly window reads as ready-and-empty, not as a failure', async () => {
-    // The host answers `windows: []` for an account OpenAI reports no weekly
-    // window for. Refusing that shape here would file a real answer under
+  test('an account with no windows reads as ready-and-empty, not as a failure', async () => {
+    // The host answers `windows: []` for an account OpenAI reports no window
+    // for. Refusing that shape here would file a real answer under
     // `invalid-response` and show the generic retry copy for a state no retry
     // can change.
     const { exports } = materialize()
@@ -598,6 +601,16 @@ describe('provider route state', () => {
     const { quotaChipLabel, quotaChipReady, TEXT } = materialize().exports
     const text = TEXT.zh
     assert.equal(quotaChipLabel({ state: 'ready', usage: { kind: 'windows', windows: [{ id: '7d', usedPercent: 40, remainingPercent: 60 }] } }, text), '周剩余 60%')
+    assert.equal(quotaChipLabel({
+      state: 'ready',
+      usage: {
+        kind: 'windows',
+        windows: [
+          { id: '5h', usedPercent: 10, remainingPercent: 90 },
+          { id: '7d', usedPercent: 20, remainingPercent: 80 },
+        ],
+      },
+    }, text), '5h 90% · 7d 80%')
     assert.equal(quotaChipLabel({
       state: 'ready',
       usage: {
