@@ -60,6 +60,27 @@ function materialize(table = { 'react': {}, '@deepseek-ai/dsh-client-ui-primitiv
   return { exports, required }
 }
 
+/**
+ * Read a rendered element tree the way a reader would: the text it puts on
+ * screen, plus the refresh control, so a test can assert what is shown rather
+ * than what the state slot says.
+ * @param {object} element - the root of a tree built by the fake `createElement`.
+ * @returns {{text: string, refresh: object|undefined}} the visible text and the refresh button.
+ */
+function flatten(element) {
+  const words = []
+  let refresh
+  const walk = node => {
+    if (typeof node === 'string' || typeof node === 'number') { words.push(String(node)); return }
+    if (node === null || typeof node !== 'object') return
+    if (node.props !== undefined && node.props !== null && node.props.className === 'dcl-refresh') refresh = node
+    if (Array.isArray(node)) { node.forEach(walk); return }
+    if (Array.isArray(node.children)) node.children.forEach(walk)
+  }
+  walk(element)
+  return { text: words.join(' '), refresh }
+}
+
 /** A context whose services all answer, capturing what the module registers. */
 function fakeContext(overrides = {}) {
   const registrations = []
@@ -445,6 +466,122 @@ describe('usage card state', () => {
     await face.refreshUsage()
     const usageCalls = calls.filter(call => call.method === 'usage')
     assert.deepEqual(usageCalls[usageCalls.length - 1].payload, { provider: 'openai-codex', force: true })
+  })
+
+  test('polls Codex 30 seconds after each completed read and stops on unload', async () => {
+    const timers = []
+    const canceled = []
+    const { exports } = materialize(undefined, {
+      setTimeout: (callback, delay) => {
+        const timer = { callback, delay }
+        timers.push(timer)
+        return timer
+      },
+      clearTimeout: timer => { canceled.push(timer) },
+    })
+    const ctx = fakeContext()
+    const usageCalls = []
+    let settleInitial
+    ctx.connection.rpc.call = (_channel, method, payload) => {
+      if (method === 'catalog') return Promise.resolve({ ok: true, value: { models: ['gpt-5.6-sol'] } })
+      usageCalls.push(payload)
+      if (usageCalls.length === 1) {
+        return new Promise(resolve => { settleInitial = resolve })
+      }
+      return Promise.resolve({
+        ok: true,
+        value: {
+          ...result.value,
+          windows: result.value.windows.map((window, index) => index === 0
+            ? { ...window, usedPercent: 13, remainingPercent: 87 }
+            : window),
+          fetchedAt: '2026-08-20T12:00:30.000Z',
+        },
+      })
+    }
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    assert.equal(timers.length, 0, 'the next poll is measured from completion, not request start')
+    settleInitial(result)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(timers.length, 1)
+    assert.equal(timers[0].delay, 30_000)
+    assert.deepEqual(usageCalls, [{ provider: 'openai-codex', force: false }])
+
+    timers[0].callback()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(usageCalls.length, 2)
+    assert.deepEqual(usageCalls[1], { provider: 'openai-codex', force: false }, 'polling preserves the shared Host cache')
+    assert.equal(face.hooks.codexCard.getSnapshot().routes.codex.usage.windows[0].remainingPercent, 87)
+    assert.equal(timers.length, 2, 'a settled poll schedules exactly one successor')
+
+    ctx.disposeEffects()
+    assert.equal(canceled.length, 1)
+    assert.equal(canceled[0], timers[1])
+    timers[1].callback()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(usageCalls.length, 2, 'a cleared late callback cannot read after unload')
+  })
+
+  test('the poll leaves the numbers on screen; a read the reader asked for says it is reading', async () => {
+    // The only test here that renders. The panel decides what a reader sees,
+    // and the bug this pins is invisible from the state slot alone: the poll
+    // put the slot into `loading`, and the panel dutifully replaced two live
+    // percentages with "正在读取额度…" every thirty seconds.
+    const React = {
+      createElement: (type, props, ...children) => ({ type, props, children: children.flat(Infinity) }),
+    }
+    const timers = []
+    const { exports } = materialize(
+      { 'react': React, '@deepseek-ai/dsh-client-ui-primitives': {} },
+      {
+        setTimeout: (callback, delay) => { const timer = { callback, delay }; timers.push(timer); return timer },
+        clearTimeout: () => {},
+      },
+    )
+    const ctx = fakeContext()
+    // Reads answer at once until `hold` goes up, then stay in flight so the
+    // panel can be read mid-read. Every held read is released at the end —
+    // an unsettled one leaves this file's real 40s abort timer running.
+    const held = []
+    let hold = false
+    const usageCalls = []
+    ctx.connection.rpc.call = (_channel, method, payload) => {
+      if (method === 'catalog') return Promise.resolve({ ok: true, value: { models: [] } })
+      usageCalls.push(payload)
+      if (!hold) return Promise.resolve(result)
+      return new Promise(resolve => { held.push(resolve) })
+    }
+    exports.apply(ctx)
+    await new Promise(resolve => setImmediate(resolve))
+    const face = ctx.registrations[0].options.inject()
+    const panel = () => flatten(exports.windowsPanelElement(
+      face.hooks.codexCard.getSnapshot().routes.codex, exports.TEXT.zh, () => {}, 'zh'))
+
+    const ready = panel()
+    assert.ok(ready.text.includes('88'), 'the settled read shows the 5h window')
+    assert.ok(ready.text.includes('97'), 'and the 7d one')
+
+    hold = true
+    timers[0].callback()
+    await new Promise(resolve => setImmediate(resolve))
+    const polling = panel()
+    assert.equal(usageCalls.length, 2, 'the poll is in flight')
+    assert.ok(polling.text.includes('88'), 'the poll does not blank the panel it is refreshing')
+    assert.ok(polling.text.includes('97'))
+    assert.equal(polling.refresh.props.disabled, false, 'nor take the refresh button away')
+
+    void face.refreshUsage()
+    await new Promise(resolve => setImmediate(resolve))
+    const forced = panel()
+    assert.deepEqual(usageCalls[2], { provider: 'openai-codex', force: true },
+      'a forced read takes over the poll rather than joining its cached one')
+    assert.ok(!forced.text.includes('88'), 'a read the reader asked for reads as in flight')
+    assert.equal(forced.refresh.props.disabled, true)
+
+    held.forEach(resolve => resolve(result))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.ok(panel().text.includes('88'), 'and the numbers come back when it lands')
   })
 
   test('an account with no windows reads as ready-and-empty, not as a failure', async () => {

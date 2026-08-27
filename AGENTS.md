@@ -44,7 +44,7 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 ### skip 不是通过，todo 也不是
 
 `node --test` 单独跑**会撒谎**。裸检出里它报 `# tests 204 / skipped 0`、退出码 0，
-而完整检出是 285 条（权威数字在 `scripts/expected.json`）。`describe(name, { skip }, fn)` 不展开子树，整个 suite 记成一行
+而完整检出是 287 条（权威数字在 `scripts/expected.json`）。`describe(name, { skip }, fn)` 不展开子树，整个 suite 记成一行
 `ok N - … # SKIP`，里面的测试**既不进 `# tests` 也不进 `# skipped`**。
 
 - 那四份 skip 守卫（`adapter`/`bin`/`settings`/`store`）是给别人在裸检出里读代码用的，
@@ -71,8 +71,9 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 
 不写出来，「全绿」就会被当成「全对」：
 
-- **`src/client.js` 占 `src/` 将近一半，实质上没有行为测试。** `test/client.test.js` **捕获**组件却从不调用
-  （`react` 是 `{}`），把组件换成 `throw` 它照样全绿。唯一验证手段是人去看真实的 `dsh web`。
+- **`src/client.js` 占 `src/` 将近一半，行为测试只到额度面板为止。** 只有 `windowsPanelElement`
+  有一条真渲染的用例；其余组件被**捕获**却从不调用（`react` 是 `{}`），换成 `throw` 照样全绿。
+  唯一验证手段是人去看真实的 `dsh web`。
 - **`login` 的 OAuth 零执行**；Windows 权限位按平台 skip；`cordis.patch.yml` 只比字符串。
 - **`npm install` 装不起来**（未发布的传递 peer 会 404）。`deps` 管的是清单**诚实**，不是可安装性。
 - **CI 绿不代表文档引用解析得到**（那两道留在本地），也不代表 peer 测试跑过（在 CI 里它们从不执行）。

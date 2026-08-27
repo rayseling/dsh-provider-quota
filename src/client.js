@@ -54,6 +54,15 @@
     var CODEX_CATALOG_METHOD = 'catalog'
     // Host worst case is 20s credential resolution plus a 15s usage fetch.
     var CODEX_USAGE_TIMEOUT_MS = 40_000
+    // Match the Host cache TTL. Scheduling from the previous completion keeps
+    // the next ordinary read beyond that TTL without bypassing the shared cache.
+    var CODEX_USAGE_POLL_MS = 30_000
+    var scheduleUsagePoll = typeof globalThis.setTimeout === 'function'
+      ? globalThis.setTimeout.bind(globalThis)
+      : undefined
+    var cancelUsagePoll = typeof globalThis.clearTimeout === 'function'
+      ? globalThis.clearTimeout.bind(globalThis)
+      : undefined
 
     // The provider routes this chip answers for, mapped to the state slot the
     // controller keeps per provider family — one slot per family, so switching
@@ -642,7 +651,7 @@
 
     /** @returns {object} one fresh per-route usage state slot. */
     function newUsageSlot() {
-      return { usage: undefined, state: 'idle', failure: undefined, abort: undefined, generation: 0 }
+      return { usage: undefined, state: 'idle', failure: undefined, abort: undefined, generation: 0, background: false }
     }
 
     /**
@@ -678,6 +687,7 @@
       USAGE_ROUTES.forEach(function (route) { self.routes[route] = newUsageSlot() })
       this.modelDirectoryFor = undefined
       this.disposed = false
+      this.usagePollTimer = undefined
       this.failure = undefined
       this.saving = false
       this.store = createStore(this.project())
@@ -964,14 +974,25 @@
      * RPC. Each route slot carries its own generation and abort, so a late
      * answer for a provider the session has switched away from is dropped
      * rather than shown under the wrong provider.
+     *
+     * `background` marks a read nobody asked for — the poll. The panel reads
+     * it to decide whether it may replace good numbers with a placeholder.
+     * @param {string} provider - the provider route to read.
+     * @param {boolean} force - bypass the Host's account cache.
+     * @param {boolean} [background] - true for the poll, false for a read a reader asked for.
+     * @returns {Promise<void>} settles when the slot has been published.
      */
-    Controller.prototype.loadUsage = function (provider, force) {
+    Controller.prototype.loadUsage = function (provider, force, background) {
       var self = this
       var route = typeof provider === 'string' ? PROVIDER_ROUTES[provider] : undefined
       if (this.disposed || route === undefined) return Promise.resolve()
       var slot = this.routes[route]
-      if (slot.state === 'loading') return Promise.resolve()
+      // Two reads of one route collapse into one, except when a reader forces
+      // a refresh over a poll: joining that read would answer the click with
+      // the cached numbers the poll asked for.
+      if (slot.state === 'loading' && !(force === true && slot.background === true)) return Promise.resolve()
       slot.state = 'loading'
+      slot.background = background === true
       slot.failure = undefined
       this.publish()
       if (slot.abort !== undefined) slot.abort.abort()
@@ -1026,10 +1047,34 @@
       })
     }
 
-    /** Stop every pending usage read and make every late completion inert. */
+    /**
+     * Schedule the next Codex quota read after the previous one has settled.
+     * A one-shot timer prevents a slow upstream response from stacking polls,
+     * while an ordinary read preserves the Host's account-scoped cache.
+     */
+    Controller.prototype.scheduleCodexUsagePoll = function () {
+      var self = this
+      if (this.disposed || this.usagePollTimer !== undefined
+        || scheduleUsagePoll === undefined || cancelUsagePoll === undefined) return
+      this.usagePollTimer = scheduleUsagePoll(function () {
+        self.usagePollTimer = undefined
+        if (self.disposed) return
+        void self.loadUsage('openai-codex', false, true).finally(function () {
+          self.scheduleCodexUsagePoll()
+        })
+      }, CODEX_USAGE_POLL_MS)
+      var timer = this.usagePollTimer
+      if (timer !== null && typeof timer === 'object' && typeof timer.unref === 'function') timer.unref()
+    }
+
+    /** Stop the quota poll and every pending usage read, making late completions inert. */
     Controller.prototype.dispose = function () {
       var self = this
       this.disposed = true
+      if (this.usagePollTimer !== undefined) {
+        cancelUsagePoll(this.usagePollTimer)
+        this.usagePollTimer = undefined
+      }
       if (this.catalogAbort !== undefined) {
         this.catalogAbort.abort()
         this.catalogAbort = undefined
@@ -1230,6 +1275,21 @@
     }
 
     /**
+     * Whether a read in flight is one the panel should show as in flight.
+     * The poll is not: replacing good numbers with a placeholder every thirty
+     * seconds reads as a fault, and what it would erase is still the truth
+     * until the new answer lands. A poll with nothing on screen yet has
+     * nothing to protect, so it shows the placeholder like any other read.
+     * @param {object} routeState - one per-route state slot.
+     * @param {boolean} hasContent - whether the slot still holds numbers to show.
+     * @returns {boolean} true when the panel should read as loading.
+     */
+    function usageReadShows(routeState, hasContent) {
+      if (routeState.state !== 'loading') return false
+      return routeState.background !== true || !hasContent
+    }
+
+    /**
      * The windowed-usage panel: the one markup the settings card (Codex
      * 5h/7d) and the session chip (Codex 5h/7d, OpenCode 5h/7d/1m) share,
      * so the two surfaces cannot drift apart.
@@ -1243,10 +1303,11 @@
       var h = React.createElement
       var usage = routeState.usage
       var windows = usage !== undefined && usage !== null && usage.kind === 'windows' ? usage.windows : []
+      var busy = usageReadShows(routeState, windows.length > 0)
       var content
-      if (routeState.state === 'loading') {
+      if (busy) {
         content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' }, text.quotaLoading)]
-      } else if (routeState.state === 'ready' && windows.length > 0) {
+      } else if ((routeState.state === 'ready' || routeState.state === 'loading') && windows.length > 0) {
         content = windows.map(function (window) { return windowRowElement(window, text, language) })
         if (routeState.failure !== undefined) {
           content.push(h('p', { key: 'failure', className: 'dcl-quotaFailure', role: 'status' },
@@ -1267,9 +1328,9 @@
           h('button', {
             type: 'button',
             className: 'dcl-refresh',
-            disabled: routeState.state === 'loading',
+            disabled: busy,
             onClick: onRefresh,
-          }, routeState.state === 'loading' ? text.refreshing : text.refresh)),
+          }, busy ? text.refreshing : text.refresh)),
         content)
     }
 
@@ -1278,10 +1339,11 @@
       var h = React.createElement
       var usage = routeState.usage
       var balances = usage !== undefined && usage !== null && usage.kind === 'balance' ? usage.balances : []
+      var busy = usageReadShows(routeState, balances.length > 0)
       var content
-      if (routeState.state === 'loading') {
+      if (busy) {
         content = [h('p', { key: 'empty', className: 'dcl-quotaEmpty', role: 'status' }, text.quotaLoading)]
-      } else if (routeState.state === 'ready') {
+      } else if (routeState.state === 'ready' || routeState.state === 'loading') {
         content = balances.map(function (balance, index) {
           return h('div', { key: index, className: 'dcl-window' },
             h('div', { className: 'dcl-quotaNumbers' },
@@ -1312,9 +1374,9 @@
           h('button', {
             type: 'button',
             className: 'dcl-refresh',
-            disabled: routeState.state === 'loading',
+            disabled: busy,
             onClick: onRefresh,
-          }, routeState.state === 'loading' ? text.refreshing : text.refresh)),
+          }, busy ? text.refreshing : text.refresh)),
         content)
     }
 
@@ -1757,7 +1819,9 @@
       var tracker = new ModelTracker(modelDirectoriesOf(ctx))
       controller.modelDirectoryFor = function (sessionId) { return tracker.directoryFor(sessionId) }
       controller.loadCatalog()
-      void controller.loadUsage('openai-codex', false)
+      void controller.loadUsage('openai-codex', false).finally(function () {
+        controller.scheduleCodexUsagePoll()
+      })
       ctx.slots.inject('settings.plugin.item', function () {
         return ctx.slots.register({
           name: 'settings.plugin.item',
@@ -1853,6 +1917,7 @@
       currencySymbol: currencySymbol,
       preferredBalance: preferredBalance,
       quotaChipLabel: quotaChipLabel,
+      windowsPanelElement: windowsPanelElement,
       quotaChipReady: quotaChipReady,
       formatPercent: formatPercent,
       quotaFailureText: quotaFailureText,
