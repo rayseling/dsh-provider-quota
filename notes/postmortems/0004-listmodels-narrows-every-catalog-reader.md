@@ -3,17 +3,21 @@
 **症状**：还没有咬到人——这一条是**在设计时**发现的，写下来是为了别把文案写错。
 
 **事实**：`SelectivePiAiAdapter.listModels` 过滤掉的模型，会从**所有宿主侧目录查询**里消失。
-`packages/host/apiproxy/src/api-proxy.ts` 的 `buildModelCatalog` 就是调 `ctx.llm.listModels`，
-而它背后是网关的 `models` RPC——宿主侧每一处模型列表都从那里来。
+收口是 `ctx.llm.listModels` 本身，宿主侧三处枚举各自独立调它：
+`packages/api/session-controller/src/catalog.ts` 的 `buildModelCatalog`（浏览器目录）、
+`packages/subagent/tool-subagent/src/list-models.ts`、`packages/acp/acp/src/model-control.ts`。
+**别把普适性归给其中任何一处**——归给收口，否则下一个人去数某一处的调用方，会以为影响面被夸大了。
 路由本身不受影响：按 provider+model 精确指定仍然解析得到，
 已经在用被隐藏模型的会话也不会中断。
 
 ## 一处被编出来的端点，走到了用户界面上
 
 这份文件、README 和**用户可见的** schema description 曾经都写着
-「包括宿主 OpenAI 兼容 API 的 `/v1/models`」。**harness 不提供这个路由。**
-`packages/host/apiproxy/README.md` 第一段写着「This package registers no routes」，
-全树里 `/v1/models` 的四处出现都是 harness 作为**客户端**去探测上游 provider。
+「包括宿主 OpenAI 兼容 API 的 `/v1/models`」。**harness 不提供这个路由**——
+全树里 `/v1/models` 只剩三处，全是 harness 作为**客户端**去探测上游 provider
+（两处在 `packages/llm/llm-pi-ai/tests/discovery.spec.ts`，一处是
+`packages/client/ui-settings-models` 的失败文案）。`buildModelCatalog` 生成的是宿主侧目录，不是 HTTP 端点。
+这段枚举**就是**那句加粗结论的全部证据；原来引的那句 apiproxy README 已随包删除，别再找一句话来替它。
 
 被过滤这件事是真的，被编的只是端点名字——和
 [0006](0006-fabricated-class-name-in-the-instructions.md) 里那个 SettingsRuntime

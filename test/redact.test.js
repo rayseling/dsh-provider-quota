@@ -1,6 +1,6 @@
 /**
  * Unit tests for the redactor. Every "leaks" case is a message shape pi-ai
- * 0.82.1 actually constructs, quoted from `dist/auth/oauth/openai-codex.js`,
+ * 0.84.2 actually constructs, quoted from `dist/auth/oauth/openai-codex.js`,
  * so a provider change that moves a secret into a new shape fails here rather
  * than in someone's terminal scrollback.
  */

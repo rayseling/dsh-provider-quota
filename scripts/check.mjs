@@ -1284,10 +1284,11 @@ export function collectImageBudgetViolations(root) {
  * The user-facing description of the model allowlist must say that it narrows
  * the advertised catalog, not just the picker.
  *
- * AGENTS.md trap 4: `listModels` is what the harness answers EVERY catalog
- * reader from — `buildModelCatalog` in the API gateway backs the `models` RPC
- * behind every host-side model list — so a model unchecked here
- * disappears from those enumerations too. An edit that softened the
+ * AGENTS.md trap 4: `listModels` is the chokepoint EVERY host-side catalog
+ * enumeration goes through, each calling it independently — the browser
+ * catalog through `buildModelCatalog` in the Session Controller, and the
+ * subagent and ACP model lists directly — so a model unchecked here
+ * disappears from all of them. An edit that softened the
  * description back to "the model picker" would be a documentation regression
  * with a support cost.
  *

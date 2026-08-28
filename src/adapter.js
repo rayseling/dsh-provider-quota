@@ -77,6 +77,19 @@ const REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
 const CREDENTIAL_TIMEOUT_MS = 20_000
 
 /**
+ * Auth context for the adapter-owned collection. Defense in depth, not the
+ * load-bearing fence: what actually keeps ambient credentials out is
+ * {@link requestProvider}'s apiKey method, which resolves from the explicit
+ * bearer override alone and never consults this context. Freezing the ambient
+ * lookups closed costs nothing and states the intent for any later pi-ai path
+ * that does reach them.
+ */
+const NO_AMBIENT_AUTH_CONTEXT = Object.freeze({
+  env: async () => undefined,
+  fileExists: async () => false,
+})
+
+/**
  * Ceiling for the OAuth refresh alone, below {@link CREDENTIAL_TIMEOUT_MS} so
  * the credential file lock is released while the caller is still waiting.
  */
@@ -85,10 +98,16 @@ const REFRESH_TIMEOUT_MS = 15_000
 /**
  * Reject with `onTimeout()` once `promise` outlives `timeoutMs`.
  *
- * The underlying work is not cancelled: pi-ai's refresh takes no
- * `AbortSignal`, and the provider's own refresh issues a `fetch` without one,
- * so a deadline can only stop waiting. The abandoned promise keeps a rejection
- * handler here so a late failure never surfaces as an unhandled rejection.
+ * The underlying work is not cancelled. pi-ai 0.84.2 does hand a signal to
+ * `refresh(credential, signal)`, but {@link boundedRefreshProvider} calls it
+ * with the credential alone, so the fetch runs unsignalled and this deadline
+ * can only stop waiting. Dropping the signal is deliberate: pi-ai's own
+ * ceiling equals {@link REFRESH_TIMEOUT_MS}, so it would fire at the same
+ * moment under a message this module cannot recognise, and only a rejection
+ * raised here carries the marker {@link classifyCredentialFailure} needs to
+ * report TIMEOUT rather than TRANSPORT. The abandoned promise keeps a
+ * rejection handler here so a late failure never surfaces as an unhandled
+ * rejection.
  * @template T
  * @param {Promise<T>} promise - the work to bound.
  * @param {number} timeoutMs - deadline in milliseconds.
@@ -111,7 +130,7 @@ const REFRESH_TIMEOUT_MARKER = 'dsh-codex-lite: OpenAI Codex token refresh did n
 /**
  * pi-ai's own wording for a refresh whose `fetch` never produced a response —
  * DNS failure, a dropped link, a proxy refusing the connection. Copied from
- * `pi-ai/dist/auth/oauth/openai-codex.js` (0.82.1), where it reads
+ * `pi-ai/dist/auth/oauth/openai-codex.js` (0.84.2), where it reads
  * `OpenAI Codex token refresh error: ${cause}`.
  */
 const REFRESH_TRANSPORT_PREFIX = 'OpenAI Codex token refresh error:'
@@ -146,7 +165,7 @@ const REFRESH_STATUS = /OpenAI Codex token (?:refresh|exchange) failed \((\d{3})
  * `Error` at the refresh site and the `ModelsError` that carries it upward
  * folds that text into its own message. Wording is therefore this plugin's
  * dependency on pi-ai as much as the function signatures are; the tests pin
- * the exact strings 0.82.1 emits, so a rewording upstream fails a test here
+ * the exact strings 0.84.2 emits, so a rewording upstream fails a test here
  * rather than silently downgrading every blip back to `AUTH`.
  * @param {unknown} error - thrown value.
  * @returns {string} the seam error code to report it under.
@@ -486,9 +505,10 @@ export function createOpenAICodexAccessResolver(store) {
  *   restart.
  * @param {() => Promise<string>} [resolveAccessToken] - shared OAuth access-token resolver.
  * @param {readonly string[] | (() => readonly string[])} [enabledModels] - model ids advertised to pickers; exact resolution remains complete.
+ * @param {(attachments: object, ref: object) => {readonlyPath: string}|undefined} [resolveImageAccess] - current tool-world path resolver.
  * @returns {PiAiAdapter} the adapter to register for `openai-codex`.
  */
-export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOverrides = {}, resolveAccessToken, enabledModels) {
+export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOverrides = {}, resolveAccessToken, enabledModels, resolveImageAccess) {
   const currentOverrides = typeof modelOverrides === 'function' ? modelOverrides : () => modelOverrides
   const provider = openaiCodexProvider()
   const catalogIds = openAICodexCatalogModelIds()
@@ -515,6 +535,8 @@ export function createOpenAICodexLiteAdapter(store, resolveAttachments, modelOve
   return new SelectivePiAiAdapter({
     profiles,
     resolveApiKey: accessToken,
+    auth: { credentials: store, authContext: NO_AMBIENT_AUTH_CONTEXT },
     resolveAttachments,
+    resolveImageAccess,
   }, currentEnabledModels)
 }

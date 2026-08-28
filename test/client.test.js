@@ -90,25 +90,79 @@ function fakeContext(overrides = {}) {
     getSnapshot: () => ({ status: 'ready', value: {}, base: undefined, user: undefined, revision: 3, writable: true, mode: 'host' }),
     subscribe: () => () => {},
   }
-  // The Host's shared describe mirror. The scope derives from it, so folding a
-  // write answer in is what moves the revision — there is no `load` on a scope.
-  const mirror = { getSnapshot: () => ({ status: 'ready' }), subscribe: () => () => {}, ensure: () => Promise.resolve(), acceptView: () => {} }
-  const api = {
-    llm: { models: () => Promise.resolve({ result: { ok: true, value: { groups: [], failures: [] } } }) },
-    settings: { mutate: () => Promise.resolve({ result: { ok: true, value: { user: {}, revision: 4 } } }) },
+  // The Host's shared describe mirror, keyed by namespace like the real one:
+  // `acceptView` REPLACES the row whose `ns` matches and appends otherwise. A
+  // fake that ignored `ns` would accept a view stripped of it, which against
+  // the real mirror lands as a phantom row — the card's revision never moves
+  // and every later save comes back `settings-conflict`.
+  // Every call the card makes across a seam, RECORDED rather than asserted in
+  // place. Production catches on all three of these paths — the catalog read
+  // sits in a try/catch, the write in a promise chain, the fold in its own
+  // `catch (_foldRefused)` — so a double that threw would be swallowed and the
+  // mutant would stay green. Recording moves the assertion out to a test,
+  // where a failure is a failure.
+  const calls = { modelCatalog: [], mutate: [], folds: [] }
+  const namespaces = []
+  const mirror = {
+    namespaces,
+    getSnapshot: () => ({ status: 'ready' }),
+    subscribe: () => () => {},
+    ensure: () => Promise.resolve(),
+    acceptView: (view) => {
+      calls.folds.push(view)
+      const at = namespaces.findIndex(row => row.ns === view?.ns)
+      if (at === -1) namespaces.push(view)
+      else namespaces[at] = view
+    },
+  }
+  /** A settings view shaped the way the Host answers a committed write. */
+  const namespaceView = (extra = {}) => ({
+    ns: settingsNs, schema: {}, value: {}, user: {}, applies: 'live', secrets: [], revision: 4, ...extra,
+  })
+  // Both Remotes answer the way the real gateway does. An arity mismatch is
+  // caught by `prepareInvocation` BEFORE the wire and outside `invoke`'s
+  // try/catch, so it leaves as a REJECTION, not an `ok:false`
+  // (packages/api/gateway/src/client/index.ts).
+  const remoteAnswer = (endpoint, arity, answer) => (...args) => {
+    calls[endpoint].push(args.length)
+    return args.length === arity
+      ? Promise.resolve(answer(...args))
+      : Promise.reject(new Error(`client api: ${endpoint} expected ${arity} argument(s), got ${args.length}`))
+  }
+  const remote = {
+    $on: () => () => {},
+    session: { modelCatalog: remoteAnswer('modelCatalog', 0, () => ({ ok: true, value: { groups: [], failures: [] } })) },
+    settings: { mutate: remoteAnswer('mutate', 3, () => ({ ok: true, value: namespaceView() })) },
   }
   const connection = {
-    api,
     rpc: { call: () => Promise.resolve({ ok: false, error: { code: 'unavailable' } }) },
   }
+  // The service names a real web shell answers. `inject` parks unless every
+  // requested name is one of them, so a name the harness does not provide —
+  // `remote.sesion`, or a namespace that moved — is a card that never mounts.
+  // That is the externally observable consequence; asserting the literal list
+  // instead would only prove this file copied it correctly out of src.
+  const provided = new Set(['slots', 'connection', 'remote', 'remote.settings', 'remote.session', 'settingsScope', 'locale', 'modelDirectories'])
+  const injections = []
+  const missing = []
   const ctx = {
     registrations,
     effects,
     scope,
-    api,
+    remote,
     connection,
-    get: name => (name === 'connection' ? connection : name === 'remote' ? { $on: () => () => {} } : undefined),
-    inject: (_names, callback) => { callback(ctx) },
+    injections,
+    missing,
+    calls,
+    mirror,
+    namespaceView,
+    get: name => (name === 'connection' ? connection : name === 'remote' ? remote : undefined),
+    inject: (names, callback) => {
+      injections.push(names)
+      const absent = names.filter(name => !provided.has(name))
+      if (absent.length > 0) { missing.push(...absent); return }
+      callback(ctx)
+    },
     effect: (run, label) => {
       effects.push(label)
       const dispose = run()
@@ -157,6 +211,46 @@ describe('module table contract', () => {
 })
 
 describe('activation', () => {
+  test('names only services a web shell answers, so the card actually mounts', () => {
+    // Each generated Remote namespace is its own cordis service
+    // (`remote.<ns>`), so injecting bare `remote` is not enough: the callback
+    // would run with `remote.session` still undefined and the picker would be
+    // permanently empty. And a name nothing provides parks the fiber forever —
+    // no throw, no console line, just a card that never appears. Both failures
+    // are invisible except through this: did it register?
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    exports.apply(ctx)
+    assert.deepEqual(ctx.missing, [], 'every injected name must be one a web shell provides')
+    assert.ok(ctx.registrations.length > 0, 'a parked fiber registers nothing')
+    const asked = ctx.injections[0]
+    for (const namespace of ['remote.settings', 'remote.session']) {
+      assert.ok(asked.includes(namespace), `${namespace} is read in the constructor, so it must be waited for`)
+    }
+  })
+
+  test('reads the model catalog with the arity the gateway will assemble', async () => {
+    // `session/modelCatalog` is declared with no parameters, and the gateway
+    // refuses any extra one before the wire. The refusal reaches the card as a
+    // rejection, which `loadLegacyCatalog` turns into a permanently empty
+    // picker — no throw, no console line.
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    exports.apply(ctx)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(ctx.calls.modelCatalog, [0], 'session/modelCatalog takes no arguments')
+  })
+
+  test('a namespace the shell does not provide parks the card instead of mounting it half-wired', () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    const realInject = ctx.inject
+    ctx.inject = (names, callback) => realInject(names.map(name => name === 'remote.session' ? 'remote.sesion' : name), callback)
+    exports.apply(ctx)
+    assert.deepEqual(ctx.missing, ['remote.sesion'])
+    assert.equal(ctx.registrations.length, 0, 'a card that cannot reach its Remotes must not register')
+  })
+
   test('registers the card keyed by the namespace the tab dispatches on', () => {
     const { exports } = materialize()
     const ctx = fakeContext()
@@ -341,8 +435,8 @@ describe('an allowlist the catalog outgrew', () => {
     ctx.connection.rpc.call = async (_channel, method) => (method === 'catalog'
       ? { ok: false, error: { code: 'method-not-found' } }
       : { ok: false, error: { code: 'unavailable' } })
-    ctx.api.llm.models = () => Promise.resolve({
-      result: { ok: true, value: { groups: [{ id: 'openai-codex', models: [{ id: 'gpt-5.4' }, { id: 'gpt-5.6-sol' }] }], failures: [] } },
+    ctx.remote.session.modelCatalog = () => Promise.resolve({
+      ok: true, value: { groups: [{ id: 'openai-codex', models: [{ id: 'gpt-5.4' }, { id: 'gpt-5.6-sol' }] }], failures: [] },
     })
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
@@ -366,15 +460,15 @@ describe('catalog lifecycle on unload', () => {
     const ctx = fakeContext()
     let settle
     let aborted = false
-    // The catalog RPC refuses at once, so the fallback runs and the hang is in
-    // `api.llm.models` — which is the path whose late answer used to reach
-    // `failCatalog` after unmount.
+    // The plugin catalog RPC refuses at once, so the fallback runs and the hang
+    // is in `remote.session.modelCatalog` — the path whose late answer used to
+    // reach `failCatalog` after unmount.
     ctx.connection.rpc.call = (_channel, method, _payload, signal) => {
       if (method !== 'catalog') return Promise.resolve({ ok: false, error: { code: 'unavailable' } })
       signal.addEventListener('abort', () => { aborted = true }, { once: true })
       return Promise.resolve({ ok: false, error: { code: 'method-not-found' } })
     }
-    ctx.api.llm.models = () => new Promise((resolve) => { settle = resolve })
+    ctx.remote.session.modelCatalog = () => new Promise((resolve) => { settle = resolve })
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     assert.equal(face.hooks.codexCard.getSnapshot().catalogState, 'loading')
@@ -384,7 +478,7 @@ describe('catalog lifecycle on unload', () => {
     try {
       await new Promise(resolve => setImmediate(resolve))
       ctx.disposeEffects()
-      settle({ result: { ok: false, error: { code: 'gone' } } })
+      settle({ ok: false, error: { code: 'gone' } })
       await new Promise(resolve => setImmediate(resolve))
       await new Promise(resolve => setImmediate(resolve))
       assert.deepEqual(warnings, [], 'a late answer after unmount is expected, not a warning')
@@ -392,7 +486,7 @@ describe('catalog lifecycle on unload', () => {
       console.warn = realWarn
     }
     let started = false
-    ctx.api.llm.models = () => { started = true; return Promise.resolve({ result: { ok: true, value: { groups: [], failures: [] } } }) }
+    ctx.remote.session.modelCatalog = () => { started = true; return Promise.resolve({ ok: true, value: { groups: [], failures: [] } }) }
     face.retryCatalog()
     assert.equal(started, false, 'and a disposed controller starts no new read')
     assert.equal(aborted, false, 'the RPC answered before unload, so nothing was left to abort')
@@ -787,7 +881,7 @@ describe('provider route state', () => {
     }
     const ctx = fakeContext()
     ctx.get = name => (name === 'connection' ? ctx.connection
-      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'remote' ? ctx.remote
       : name === 'modelDirectories' ? { directoryFor: () => directory }
       : undefined)
     exports.apply(ctx)
@@ -813,7 +907,7 @@ describe('provider route state', () => {
     let directory = makeDirectory('openai-codex')
     const ctx = fakeContext()
     ctx.get = name => (name === 'connection' ? ctx.connection
-      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'remote' ? ctx.remote
       : name === 'modelDirectories' ? { directoryFor: () => directory }
       : undefined)
     exports.apply(ctx)
@@ -838,7 +932,7 @@ describe('provider route state', () => {
     let service
     const ctx = fakeContext()
     ctx.get = name => (name === 'connection' ? ctx.connection
-      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'remote' ? ctx.remote
       : name === 'modelDirectories' ? service
       : undefined)
     exports.apply(ctx)
@@ -859,7 +953,7 @@ describe('provider route state', () => {
     let scoped = false
     const ctx = fakeContext()
     ctx.get = name => (name === 'connection' ? ctx.connection
-      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'remote' ? ctx.remote
       : name === 'modelDirectories' ? { directoryFor: () => { if (!scoped) throw new Error('no scope'); return directory } }
       : undefined)
     exports.apply(ctx)
@@ -874,7 +968,7 @@ describe('provider route state', () => {
     const { exports } = materialize()
     const ctx = fakeContext()
     ctx.get = name => (name === 'connection' ? ctx.connection
-      : name === 'remote' ? { $on: () => () => {} }
+      : name === 'remote' ? ctx.remote
       : name === 'modelDirectories' ? { directoryFor: () => { throw new Error('no scope') } }
       : undefined)
     exports.apply(ctx)
@@ -892,11 +986,10 @@ describe('the model list', () => {
     const { exports } = materialize()
     const ctx = fakeContext()
     let calls = 0
-    ctx.api.llm.models = () => {
+    ctx.remote.session.modelCatalog = () => {
       calls++
       return Promise.resolve(models())
     }
-    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     return { face, calls: () => calls }
@@ -907,7 +1000,7 @@ describe('the model list', () => {
 
   test('offers every route model that is not already on the card', async () => {
     const { face } = withCatalog(() => ({
-      result: { ok: true, value: { groups: [{ id: 'openai-codex', models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.6-sol' }] }] } },
+      ok: true, value: { groups: [{ id: 'openai-codex', models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.6-sol' }] }] },
     }))
     await settle()
     const state = face.hooks.codexCard.getSnapshot()
@@ -926,7 +1019,7 @@ describe('the model list', () => {
     ctx.connection.rpc.call = (_channel, method) => method === 'catalog'
       ? Promise.resolve({ ok: true, value: { models: ['gpt-5.5', 'gpt-5.6-sol'] } })
       : Promise.resolve({ ok: false, error: { code: 'unavailable' } })
-    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
+    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? ctx.remote : undefined)
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     await new Promise(resolve => setImmediate(resolve))
@@ -941,7 +1034,7 @@ describe('the model list', () => {
     // fulfilment handler used to escape as an unhandled rejection and leave
     // the button reading "all added".
     for (const value of [{ groups: 'not an array' }, { groups: [{ id: 'openai-codex', models: 'nope' }] }, {}]) {
-      const { face } = withCatalog(() => ({ result: { ok: true, value } }))
+      const { face } = withCatalog(() => ({ ok: true, value }))
       await settle()
       const state = face.hooks.codexCard.getSnapshot()
       assert.deepEqual(state.addable, [], JSON.stringify(value))
@@ -1133,23 +1226,47 @@ describe('save', () => {
       getSnapshot: () => ({ status: 'ready', base: undefined, user: undefined, revision: 7, writable: true, mode: 'host', ...snapshot }),
       subscribe: () => () => {},
     }
-    ctx.settingsScope = { bind: () => scope, describe: () => ({ acceptView: () => {} }) }
-    ctx.api.settings.mutate = mutate
-    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
+    ctx.settingsScope = { bind: () => scope, describe: () => ctx.mirror }
+    // Overrides inherit the arity contract; otherwise every per-test double
+    // would quietly re-license a call shape the gateway rejects.
+    ctx.remote.settings.mutate = (...args) => {
+      ctx.calls.mutate.push(args.length)
+      return args.length === 3
+        ? Promise.resolve(mutate(...args))
+        : Promise.reject(new Error(`client api: settings/mutate expected 3 argument(s), got ${args.length}`))
+    }
     exports.apply(ctx)
-    return ctx.registrations[0].options.inject()
+    const face = ctx.registrations[0].options.inject()
+    face.ctx = ctx
+    return face
   }
 
+  test('sends the write with the arity the gateway will assemble, and folds a view it can key', async () => {
+    // Two contracts the card cannot observe for itself. An extra or missing
+    // argument is refused by `prepareInvocation` before the wire, arriving as
+    // a rejection the save path renders as "connection dropped" on every
+    // click; and a view without `ns` is appended to the mirror as a phantom
+    // row instead of replacing this namespace's, so the revision the next
+    // write fences on never moves and every later save conflicts.
+    const face = saving((_ns, _ops, _revision) => ({ ok: true, value: face.ctx.namespaceView({ revision: 8 }) }))
+    face.edit('gpt-5.6-sol', '900k')
+    await face.save()
+    assert.deepEqual(face.ctx.calls.mutate, [3], 'settings/mutate takes (ns, ops, expectedRevision)')
+    assert.equal(face.ctx.calls.folds.length, 1)
+    assert.equal(face.ctx.calls.folds[0].ns, settingsNs, 'a fold the mirror cannot key replaces nothing')
+    assert.deepEqual(face.ctx.mirror.namespaces.map(row => row.revision), [8], 'the row moved rather than a second one appearing')
+  })
+
   test('sends one fenced mutate carrying every staged edit', async () => {
-    let payload
-    const face = saving((received) => {
-      payload = received
-      return Promise.resolve({ result: { ok: true, value: { user: {}, revision: 8 } } })
+    let received
+    const face = saving((namespace, ops, expectedRevision) => {
+      received = { namespace, ops, expectedRevision }
+      return Promise.resolve({ ok: true, value: { user: {}, revision: 8 } })
     })
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
-    assert.deepEqual(payload, {
-      ns: settingsNs,
+    assert.deepEqual(received, {
+      namespace: settingsNs,
       ops: [{ op: 'set', path: ['modelOverrides', 'gpt-5.6-sol', 'contextWindow'], value: 900_000 }],
       expectedRevision: 7,
     })
@@ -1158,7 +1275,7 @@ describe('save', () => {
 
   test('shows the seam refusal verbatim, since it names the known ids', async () => {
     const message = 'dsh-codex-lite: modelOverrides names "gpt-9-nope", which the openai-codex catalog does not carry; known ids are gpt-5.5, gpt-5.6-sol'
-    const face = saving(() => Promise.resolve({ result: { ok: false, error: { code: 'settings-rejected', message } } }))
+    const face = saving(() => Promise.resolve({ ok: false, error: { code: 'settings-rejected', message } }))
     face.addRow('gpt-9-nope')
     face.edit('gpt-9-nope', '1000')
     await face.save()
@@ -1168,7 +1285,7 @@ describe('save', () => {
   })
 
   test('answers a conflict with copy the operator can act on', async () => {
-    const face = saving(() => Promise.resolve({ result: { ok: false, error: { code: 'settings-conflict', message: 'revision 7 is stale' } } }))
+    const face = saving(() => Promise.resolve({ ok: false, error: { code: 'settings-conflict', message: 'revision 7 is stale' } }))
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
     const { failure } = face.hooks.codexCard.getSnapshot()
@@ -1176,15 +1293,38 @@ describe('save', () => {
     assert.match(failure, /改过|changed/u)
   })
 
-  test('reports a write that never reached the host', async () => {
-    const face = saving(() => Promise.reject(new Error('offline')))
+  test('reports a write that never reached the host, in the operator\'s language', async () => {
+    // A dropped link does not reject. API Gateway catches the carrier throw
+    // and RESOLVES `internal`, carrying its own English assembly string — so
+    // this arrives on the fulfilment path, and rendering `error.message`
+    // verbatim would put `client api: settings/mutate failed: …` on a
+    // Chinese card.
+    const face = saving(() => Promise.resolve({
+      ok: false,
+      error: { code: 'internal', message: 'client api: settings/mutate failed: transport failure for /api: HTTP 502', details: {} },
+    }))
+    face.edit('gpt-5.6-sol', '900k')
+    await face.save()
+    const state = face.hooks.codexCard.getSnapshot()
+    assert.equal(state.saving, false)
+    assert.match(state.failure, /连接|connection/u)
+    assert.doesNotMatch(state.failure, /client api/u, 'the carrier\'s own wording must not reach the operator')
+  })
+
+  test('reports a withdrawn namespace the same way, since neither is the seam refusing', async () => {
+    const face = saving(() => Promise.resolve({
+      ok: false,
+      error: { code: 'internal', message: 'client api: Remote method settings/mutate is no longer mounted', details: {} },
+    }))
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
     assert.match(face.hooks.codexCard.getSnapshot().failure, /连接|connection/u)
   })
 
-  test('reports a synchronous write transport error and clears saving', async () => {
-    const face = saving(() => { throw new Error('offline') })
+  test('reports an assembly fault and clears saving', async () => {
+    // The one path that still rejects: a call the gateway refuses to assemble
+    // (wrong arity, no active Connection) throws before any request exists.
+    const face = saving(() => { throw new Error('client api: settings/mutate expected 3 argument(s), got 2') })
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
     const state = face.hooks.codexCard.getSnapshot()
@@ -1194,7 +1334,7 @@ describe('save', () => {
 
   test('refuses to send an invalid draft', async () => {
     let calls = 0
-    const face = saving(() => { calls++; return Promise.resolve({ result: { ok: true, value: {} } }) })
+    const face = saving(() => { calls++; return Promise.resolve({ ok: true, value: {} }) })
     face.edit('gpt-5.6-sol', 'nonsense')
     await face.save()
     assert.equal(calls, 0)
@@ -1222,15 +1362,14 @@ describe('save', () => {
     }
     const mirror = { acceptView: (view) => { folded.push(view.revision); held = view.revision } }
     ctx.settingsScope = { bind: () => scope, describe: () => mirror }
-    ctx.api.settings.mutate = (payload) => {
-      sent.push(payload.expectedRevision)
-      if (payload.expectedRevision !== hostRevision) {
-        return Promise.resolve({ result: { ok: false, error: { code: 'settings-conflict', message: 'stale' } } })
+    ctx.remote.settings.mutate = (_namespace, _ops, expectedRevision) => {
+      sent.push(expectedRevision)
+      if (expectedRevision !== hostRevision) {
+        return Promise.resolve({ ok: false, error: { code: 'settings-conflict', message: 'stale' } })
       }
       hostRevision += 1
-      return Promise.resolve({ result: { ok: true, value: { ns: settingsNs, user: {}, revision: hostRevision } } })
+      return Promise.resolve({ ok: true, value: { ns: settingsNs, user: {}, revision: hostRevision } })
     }
-    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     face.edit('gpt-5.6-sol', '900k')
@@ -1260,11 +1399,10 @@ describe('save', () => {
       describe: () => ({ acceptView: (view) => { order.push('fold'); held = view.revision } }),
     }
     let sent = 0
-    ctx.api.settings.mutate = () => {
+    ctx.remote.settings.mutate = () => {
       sent += 1
-      return new Promise((resolve) => { answer = () => resolve({ result: { ok: true, value: { ns: settingsNs, user: {}, revision: 8 } } }) })
+      return new Promise((resolve) => { answer = () => resolve({ ok: true, value: { ns: settingsNs, user: {}, revision: 8 } }) })
     }
-    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     face.edit('gpt-5.6-sol', '900k')
@@ -1296,8 +1434,7 @@ describe('save', () => {
       }),
       describe: () => ({ acceptView: () => { throw new Error('mirror refused') } }),
     }
-    ctx.api.settings.mutate = () => Promise.resolve({ result: { ok: true, value: { ns: settingsNs, user: {}, revision: 8 } } })
-    ctx.get = name => (name === 'connection' ? ctx.connection : name === 'remote' ? { $on: () => () => {} } : undefined)
+    ctx.remote.settings.mutate = () => Promise.resolve({ ok: true, value: { ns: settingsNs, user: {}, revision: 8 } })
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     face.edit('gpt-5.6-sol', '900k')
@@ -1310,7 +1447,7 @@ describe('save', () => {
 
   test('sends nothing when the drafts add up to no change', async () => {
     let calls = 0
-    const face = saving(() => { calls++; return Promise.resolve({ result: { ok: true, value: {} } }) },
+    const face = saving(() => { calls++; return Promise.resolve({ ok: true, value: {} }) },
       { user: { modelOverrides: { 'gpt-5.6-sol': { contextWindow: 900_000 } } } })
     face.edit('gpt-5.6-sol', '900000')
     await face.save()

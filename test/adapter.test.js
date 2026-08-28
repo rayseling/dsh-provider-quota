@@ -13,6 +13,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, afterEach, describe, test } from 'node:test'
+import { zstdDecompressSync } from 'node:zlib'
 
 const loaded = await Promise.all([
   import('../src/adapter.js'),
@@ -194,6 +195,62 @@ describe('catalog sizing', { skip }, () => {
     )
     assert.ok(Number.isSafeInteger(profile.requestImagePixelBudget) && profile.requestImagePixelBudget > 0)
     assert.ok(Number.isSafeInteger(profile.requestImageMaxBytes) && profile.requestImageMaxBytes > 0)
+  })
+
+  test('an image request carries the current tool-readable normalized path', async () => {
+    // DSH 0.1.2-alpha.1 split a durable attachment's Host location from the
+    // path model tools can read. Supplying only resolveAttachments still sends
+    // the pixels, but strips that execution-world path from the text handle
+    // beside them, so a later turn cannot use read_image on the same object.
+    const ref = {
+      attachmentId: 'sha256:0123456789abcdef',
+      mediaType: 'image/png',
+      bytes: 4,
+      width: 1,
+      height: 1,
+      name: 'pixel.png',
+    }
+    const requestImage = {
+      variantId: 'sha256:request-version',
+      attachment: ref,
+      data: Uint8Array.from([137, 80, 78, 71]),
+      mediaType: 'image/png',
+      bytes: 4,
+      width: 1,
+      height: 1,
+      depth: 'uchar',
+      space: 'srgb',
+      hasAlpha: false,
+    }
+    const attachments = { readImageRequest: async () => requestImage }
+    const readablePath = '/workspace/.dsh/attachments/pixel.png'
+    let body = ''
+    globalThis.fetch = async (input, init) => {
+      if (input instanceof Request) {
+        body = await input.clone().text()
+      } else if (typeof init?.body === 'string') {
+        body = init.body
+      } else if (init?.body instanceof Uint8Array) {
+        body = zstdDecompressSync(init.body).toString('utf8')
+      }
+      return new Response('probe complete', { status: 503 })
+    }
+    const adapter = adapterModule.createOpenAICodexLiteAdapter(
+      new storeModule.OpenAICodexCredentialStore(await homeWithCredential(false)),
+      () => attachments,
+      {},
+      undefined,
+      undefined,
+      () => ({ readonlyPath: readablePath }),
+    )
+    for await (const _chunk of adapter.stream({
+      provider: 'openai-codex',
+      model: MODEL,
+      messages: [{ role: 'user', content: [{ type: 'image', attachment: ref }] }],
+    })) {
+      // Drain the adapter-owned terminal chunks after the probe response.
+    }
+    assert.match(body, new RegExp(readablePath.replaceAll('/', '\\/'), 'u'))
   })
 
   test('an unconfigured route keeps the installed catalog', async () => {

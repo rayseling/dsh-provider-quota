@@ -664,14 +664,17 @@
      * of the host half's `validate` hook is to tell the operator which model
      * ids the catalog actually carries.
      * @param {object} scope - the bound settings scope.
-     * @param {object} connection - API plus trusted generic RPC transport.
+     * @param {object} connection - trusted generic RPC transport.
+     * @param {object} remote - generated settings and session Remote namespaces.
      * @param {object|undefined} locale - the locale service, when one is mounted.
+     * @param {object} mirror - the shared settings describe mirror; `save` folds each write answer into it.
      */
-    function Controller(scope, connection, locale, mirror) {
+    function Controller(scope, connection, remote, locale, mirror) {
       var self = this
       this.scope = scope
       this.connection = connection
-      this.api = connection.api
+      this.settingsRemote = remote.settings
+      this.sessionRemote = remote.session
       this.locale = locale
       // The shared describe mirror. `save` folds each write answer into it,
       // which is what advances the revision the next write fences on.
@@ -871,8 +874,8 @@
      * catalog — so it must never be tried first: a deployment that ships one
      * model would render exactly that one model and lock the user out of
      * re-enabling the rest, which is the whole thing the RPC was added to
-     * prevent. `api.llm.models` is narrowed too (SelectivePiAiAdapter filters
-     * the very list it reads), so neither source is authoritative here. Take
+     * prevent. `remote.session.modelCatalog` is narrowed too because it calls
+     * the same `listModels`, so neither source is authoritative here. Take
      * the union of what both know, mark the result partial so the card can
      * say the list may be short, and keep the base as the last resort rather
      * than the first.
@@ -881,15 +884,14 @@
       var self = this
       var request
       try {
-        request = this.api.llm.models({})
+        request = this.sessionRemote.modelCatalog()
       } catch (error) {
         if (baseCatalog.length > 0 && this.finishCatalog(baseCatalog, true)) return
         this.failCatalog(reason || 'unavailable', detail || error)
         return
       }
-      Promise.resolve(request).then(function (response) {
+      Promise.resolve(request).then(function (result) {
         if (self.disposed) return
-        var result = response === undefined ? undefined : response.result
         if (result === undefined || !result.ok) {
           if (baseCatalog.length > 0 && self.finishCatalog(baseCatalog, true)) return
           self.failCatalog(reason || 'refused', (result && result.error) || detail)
@@ -940,7 +942,10 @@
       }
       Promise.resolve(request).then(function (response) {
         if (self.disposed) return
-        var result = response === undefined ? undefined : response.result === undefined ? response : response.result
+        // One envelope now: the trusted RPC and the generated Remotes both
+        // answer bare `{ok, value}` / `{ok, error}`. The `{result: …}` hop this
+        // line used to defend against went out with `connection.api`.
+        var result = response
         var models = result && result.ok && result.value && result.value.models
         if (!Array.isArray(models) || !self.finishCatalog(models)) {
           self.loadLegacyCatalog(baseCatalog, 'refused', result && result.error)
@@ -1111,10 +1116,10 @@
       this.saving = true
       this.failure = undefined
       this.publish()
-      var payload = { ns: SETTINGS_NS, ops: ops }
-      if (snapshot.revision !== undefined) payload.expectedRevision = snapshot.revision
-      return Promise.resolve().then(function () { return self.api.settings.mutate(payload) }).then(function (response) {
-        if (response !== undefined && response.result !== undefined && response.result.ok) {
+      return Promise.resolve().then(function () {
+        return self.settingsRemote.mutate(SETTINGS_NS, ops, snapshot.revision)
+      }).then(function (response) {
+        if (response !== undefined && response.ok) {
           // The answer to a settings write IS the namespace's new view, so the
           // Host folds it into the shared mirror rather than paying for a read
           // that would only fetch back what it was just told. Doing the same
@@ -1127,7 +1132,7 @@
           // a conflict means someone else moved it, which reaches the mirror
           // as the Host's own document-updated signal.
           try {
-            self.mirror.acceptView(response.result.value)
+            self.mirror.acceptView(response.value)
           } catch (_foldRefused) {
             // Not this card's to repair: the same signal arrives for every
             // committed write, so the mirror still converges — one round trip
@@ -1138,11 +1143,18 @@
           self.modelSelection = undefined
           self.failure = undefined
         } else {
-          var error = response && response.result ? response.result.error : undefined
-          // A conflict is the operator's to resolve, so it gets copy of its
-          // own; everything else is the seam's own sentence, which for a
-          // refused model id already lists every id the catalog carries.
-          self.failure = error === undefined
+          var error = response && response.error ? response.error : undefined
+          // Three classes, and only one of them is the seam talking. A dropped
+          // link is an OUTCOME here, not a rejection: API Gateway catches the
+          // carrier throw and resolves `internal` carrying its own English
+          // assembly string (`client api: settings/mutate failed: …`), and it
+          // reuses that code for a namespace withdrawn mid-call. Rendering
+          // either verbatim puts untranslated internals in front of the
+          // operator, so both take the offline copy. A conflict is the
+          // operator's to resolve, so it gets copy of its own; what is left is
+          // `settings-rejected`, the seam's own sentence, which for a refused
+          // model id already lists every id the catalog carries.
+          self.failure = error === undefined || error.code === 'internal'
             ? text.offline
             : error.code === 'settings-conflict' ? text.conflict : error.message
         }
@@ -1805,7 +1817,7 @@
       // The shared describe mirror, which this card folds its write answers
       // into. Not defended here: `mount` runs inside `apply`'s try/catch, so a
       // Host without it costs this card and nothing else.
-      var controller = new Controller(scope, connection, localeOf(ctx), ctx.settingsScope.describe())
+      var controller = new Controller(scope, connection, ctx.remote, localeOf(ctx), ctx.settingsScope.describe())
       ctx.effect(function () {
         var disposers = [scope.subscribe(function () { controller.publish() })]
         if (controller.locale !== undefined) {
@@ -1884,7 +1896,7 @@
      */
     function apply(ctx) {
       try {
-        ctx.inject(['slots', 'connection', 'remote', 'settingsScope'], function (scoped) {
+        ctx.inject(['slots', 'connection', 'remote', 'remote.settings', 'remote.session', 'settingsScope'], function (scoped) {
           try {
             mount(scoped)
           } catch (error) {

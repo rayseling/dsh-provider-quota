@@ -13,11 +13,11 @@
 | 消息/流转换、附件、重试、reasoning 元数据 | dsh 官方 `PiAiAdapter`(`@deepseek-ai/dsh-llm-pi-ai` 公开导出) |
 | 本插件自己写的 | 一个 0600 权限的凭据文件存储 + 终端登录命令 + 一个把 OAuth token 作为请求级 bearer 交给官方适配器的桥(含凭据解析的单飞与超时护栏)+ 一个 token 脱敏器 + 一个把三个上游的额度/余额归一成同一个 union 的 Connection RPC(只出标准化数据,凭据一律留在主机)+ 一张 Settings 卡片和一个会话头部额度胶囊(手写的经典脚本,无打包步骤) |
 
-**刻意不做的**(相对 dsh-codex):不接管 web 搜索、无 imagegen、不改写 `read_image`(宿主自带的那个在这条路由上照常可用,见「使用」)、无 TUI、不改默认模型。浏览器面只有一张设置卡片加会话头部的一个额度胶囊(按当前 provider 切换 Codex / OpenCode Go / DeepSeek 三种读数);登录仍然只在 dsh 主机的终端里发生,凭据永远不进浏览器,也不进 `settings.yaml`。额度读取复用 Harness Connection 的 trusted-host 栅栏,不直接注册绕过边界的 HTTP 路由。
+**刻意不做的**(相对 dsh-codex):不接管 web 搜索、无 imagegen、不改写 `read_image`(宿主自带的那个在这条路由上照常可用,见「使用」)、无 TUI、不改默认模型。浏览器面只有一张设置卡片加会话头部的一个额度胶囊(按当前 provider 切换 Codex / OpenCode Go / DeepSeek 三种读数);登录仍然只在 dsh 主机的终端里发生,凭据永远不进浏览器,也不进 `settings.yaml`。额度读取走 Harness Connection 统一的请求检查和浏览器会话认证,不另开 HTTP 路由。
 
 ## 安装
 
-需要 **dsh 0.1.0-rc.8 或更新**。卡片保存后靠宿主的共享 settings mirror 把写入应答折回来推进 revision,rc.8 之前没有这个东西;额度读取要用的 trusted-host Connection RPC、会话头部插槽和模型目录服务,rc.8 都已经有了,所以这条下限没有因为额度功能抬高。宿主半侧(模型路由、登录、凭据存储)不受影响,更老的 dsh 上是整个浏览器面——卡片和额度胶囊——都不出现。
+需要 **dsh 0.1.2-alpha.1 或更新**:附件的工具可读路径和 Connection 浏览器认证是这个版本定的,`PiAiAdapter` 的 auth 注入更早——0.1.1-rc.1 起就是必填。插件按这些接口接线,不再支持旧版。新版 `llm-pi-ai` 也能原生配置 Codex;不要同时在它的 `providers` 里启用 `openai-codex`,同名路由只能注册一次。
 
 ```sh
 dsh plugin --profile web add file:/你克隆到的路径/dsh-codex-lite
@@ -40,7 +40,7 @@ dsh plugin --profile web exec dsh-codex-lite logout
 
 重启 `dsh web`,在会话里 `/model` 选 `openai-codex` 下的模型即可;默认模型保持你原有设置不变。未登录时请求会明确报错并提示登录命令。
 
-**读图**:宿主自带的 `read_image` 在这条路由上照常可用,本插件不替换它。pi-ai 官方 catalog 给除 `gpt-5.3-codex-spark` 以外的每个 Codex 模型都声明了 `image` 输入,附件服务也按官方 pi-ai 路由的同一种接法接上了(`resolveAttachments: () => ctx.get('attachments')`)。spark 是纯文本模型,对它调 `read_image` 会被明确拒绝并提示换模型,而不是先读盘再在上游失败。
+**读图**:宿主自带的 `read_image` 在这条路由上照常可用,本插件不替换它。pi-ai 官方 catalog 给除 `gpt-5.3-codex-spark` 以外的每个 Codex 模型都声明了 `image` 输入;附件同时接上请求字节和新版工具可读路径:会话的文件系统能映射到宿主附件时(本机 fs),被预算挤掉的图仍留下可供 `read_image` 使用的归一化路径;沙箱执行环境映射不到,占位文案会直说没有本地路径。spark 是纯文本模型,对它调 `read_image` 会被明确拒绝并提示换模型,而不是先读盘再在上游失败。
 
 > 0.4.0 之前有个 bug:profile 少写了 `requestImagePixelBudget` 和 `requestImageMaxBytes` 两个字段。适配器**总是**按这两个字段拼出图片策略对象传下去,所以缺字段并不会退回宿主默认值,而是传下去一对 `undefined`——转换层随后把每张图的大小算成 `NaN`,预算比较全部落空,于是把请求里**每一张图都换成了文本占位符**,全程不报错。表现就是模型回一句「我这边没收到图片内容」。升级到 0.4.0 即可。
 
@@ -81,7 +81,7 @@ llm-openai-codex-lite:
 | `opencode-go` / `opencode-go-extra` | `GET {该路由实际 baseURL}/usage`(未公开接口,cc-switch#6433 发现) | 该路由配置的 `apiKeyEnv`(默认 `OPENCODE_GO_API_KEY`),回退 `llm-pi-ai` 存储的 API key 记录,再回退 OpenCode CLI 的 `auth.json`;同时携带 Bearer 与 `x-api-key` |
 | `deepseek-official` / `deepseek` | `GET {该路由实际 baseURL}/user/balance`(官方接口) | 该路由配置的 `apiKeyEnv`(默认 `DEEPSEEK_API_KEY`),经 credentials seam 解析 |
 
-OpenCode Go 返回「已用」百分比,展示层换算成剩余;DeepSeek 金额保持 API 返回的十进制字符串,不做浮点换算。浏览器通过 Harness Connection RPC 的 `/dsh-codex-lite` channel 拿到标准化后的结果;Connection 会先执行 Host / Origin / Fetch-Site trusted-host 栅栏。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
+OpenCode Go 返回「已用」百分比,展示层换算成剩余;DeepSeek 金额保持 API 返回的十进制字符串,不做浮点换算。浏览器通过 Harness Connection RPC 的 `/dsh-codex-lite` channel 拿到标准化结果;Connection 会先校验 Host / Origin / Fetch-Site 和浏览器会话。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
 
 Codex 与 OpenCode 的接口都是未公开契约:上游改动时对应显示会变成「额度暂不可用」,不影响模型请求;点「刷新」可以重试。若上游本来就没给这个账户返回额度窗口,面板说明的是这件事,而不是一句「重试」——重试改变不了它。
 
@@ -97,7 +97,7 @@ Codex 与 OpenCode 的接口都是未公开契约:上游改动时对应显示会
 
 填了目录里没有的模型名会被**当场拒绝**,并列出所有可选的名字——不会出现"存进去了却没生效"。
 
-从别的机器访问(不是 127.0.0.1)时要看到这张卡片,profile 的 `connection` 需要配 `privilegedAuthority: trusted-hosts`;否则设置面只对本机开放。
+从别的机器访问时,先让 Web profile 的 `trustedHosts` 接受该 authority,并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。**设置卡片还得再等一版**:0.1.2-alpha.1 上非 loopback 页面的 settings scope 建在内存里,卡片渲染不出内容,修复在该版本之后才进主干。
 
 ### 这个数字意味着什么
 

@@ -7,8 +7,8 @@
  * read-only Connection RPC that answers the account-level usage of the
  * session's current model route — Codex 5h/7d windows, OpenCode Go 5h/7d/1m
  * windows, or the official DeepSeek balance — for the Settings card and the
- * session-header chip; Connection applies the Harness trusted-host fence
- * first, and every credential stays host-side.
+ * session-header chip; Connection applies request trust and browser-session
+ * authentication first, and every credential stays host-side.
  * It registers no tools or search provider and changes no defaults.
  *
  * The editable fields have three layers, each overriding the one above: the
@@ -34,6 +34,7 @@ import {
 } from './usage.js'
 import { credentialKey, credentialRef, isCredentialKeySegment } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
+import { resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
@@ -62,7 +63,7 @@ export {
 /** Stable Cordis plugin name. */
 export const name = 'llm-openai-codex-lite'
 
-/** The LLM registry is the only required service; the trusted usage RPC mounts opportunistically. */
+/** The LLM registry is the only required service; the authenticated usage RPC mounts opportunistically. */
 export const inject = ['llm']
 
 /**
@@ -94,11 +95,13 @@ export const settingsNs = settingsNamespace('llm-openai-codex-lite')
  * The model list defaults to every id in the installed catalog, so an
  * unconfigured install advertises exactly what it did before.
  *
- * It narrows the ADVERTISED catalog, not just the picker. `listModels` is what
- * the harness answers every catalog reader from — `buildModelCatalog` in
- * `packages/host/apiproxy/src/api-proxy.ts`, which backs the gateway's `models`
- * RPC and therefore every host-side model list — so a model unchecked here
- * disappears from those enumerations too. Routing is untouched: a session
+ * It narrows the ADVERTISED catalog, not just the picker. `listModels` is the
+ * chokepoint every host-side enumeration goes through, and each one calls it
+ * independently — `buildModelCatalog` in
+ * `packages/api/session-controller/src/catalog.ts` for the browser catalog,
+ * plus `packages/subagent/tool-subagent/src/list-models.ts` and
+ * `packages/acp/acp/src/model-control.ts` — so a model unchecked here
+ * disappears from all of them. Routing is untouched: a session
  * already on a hidden model keeps working, and an exact provider/model request
  * still resolves.
  */
@@ -251,6 +254,11 @@ export function apply(ctx, config) {
       () => current().modelOverrides ?? NO_OVERRIDES,
       resolveAccessToken,
       () => selectableModelIds(current().enabledModels, catalogIds),
+      (attachments, ref) => resolveImageAttachmentAccess(
+        attachments,
+        hostPath => ctx.get('fs')?.processPathFromHostPath(hostPath),
+        ref,
+      ),
     ),
   )
   // The three quota sources, keyed by the model route the browser reports.
@@ -258,8 +266,8 @@ export function apply(ctx, config) {
   // plus a fixed suffix, so a key can only ever travel to the origin the model
   // route itself is configured against; unknown routes answer "none" and the
   // browser renders nothing. Headless compositions keep the model route
-  // without acquiring a browser dependency; in Web, Connection owns the
-  // Host/Origin/fetch-site trust fence and the channel registration follows
+  // without acquiring a browser dependency; in Web, Connection owns request
+  // trust plus browser-session authentication, and channel registration follows
   // this plugin's fiber on unload.
   const piSection = () => readSection(ctx, settingsNamespace('llm-pi-ai'))
   const nativeSection = () => readSection(ctx, settingsNamespace('llm-deepseek'))
@@ -311,7 +319,6 @@ export function apply(ctx, config) {
     connectionCtx.connection.rpc.handle(
       OPENAI_CODEX_USAGE_CHANNEL,
       createProviderUsageRpc(usage, catalogIds),
-      { authority: 'trusted-host' },
     )
   })
   // The catalog ships with the package, so the known ids are fixed for this

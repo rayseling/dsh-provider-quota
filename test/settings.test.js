@@ -17,6 +17,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, test } from 'node:test'
+import { zstdDecompressSync } from 'node:zlib'
 
 const loaded = await Promise.all([
   import('@deepseek-ai/cordis'),
@@ -40,6 +41,20 @@ after(async () => {
   await Promise.all(homes.map(home => rm(home, { recursive: true, force: true })))
 })
 
+/**
+ * A Codex access token. pi-ai reads the ChatGPT account id out of this claim
+ * when it builds request headers, so a token without it never reaches a wire.
+ * @returns {string} a JWT carrying the account claim.
+ */
+function accessToken() {
+  const segment = value => Buffer.from(JSON.stringify(value)).toString('base64url')
+  return [
+    segment({ alg: 'none', typ: 'JWT' }),
+    segment({ 'https://api.openai.com/auth': { chatgpt_account_id: 'acc_test' } }),
+    'signature',
+  ].join('.')
+}
+
 /** @returns {Promise<string>} a tracked, empty harness home. */
 async function freshHome() {
   const home = await mkdtemp(join(tmpdir(), 'dsh-codex-lite-settings-'))
@@ -60,6 +75,9 @@ async function boot(home, config, options = {}) {
   await ctx.plugin(llm.LlmRuntime)
   if (options.connection !== undefined) ctx.provide('connection', options.connection)
   if (options.credentials !== undefined) ctx.provide('credentials', options.credentials)
+  if (options.webServer !== undefined) ctx.provide('webServer', options.webServer)
+  if (options.attachments !== undefined) ctx.provide('attachments', options.attachments)
+  if (options.fs !== undefined) ctx.provide('fs', options.fs)
   if (options.settings !== false) {
     await ctx.plugin(settingsFile.FileSettingsProvider, { path: join(home, 'settings.yaml'), watch: false })
   }
@@ -161,21 +179,30 @@ describe('settings section', { skip }, () => {
     assert.equal(plugin.settingsNs, 'llm-openai-codex-lite')
   })
 
-  test('registers quota on the trusted Connection boundary instead of a raw HTTP route', async () => {
+  test('registers quota on the authenticated Connection boundary instead of a raw HTTP route', async () => {
+    // What matters is WHERE the quota read is reachable from, not how many
+    // arguments this plugin happens to pass. Counting the arguments would go
+    // red the day Connection adds a parameter the plugin must start passing —
+    // red for the correct fix. So this pins the boundary instead: a channel on
+    // Connection, which applies request trust then browser-session
+    // authentication, and no route of our own on the web server, which would
+    // answer outside both.
     const home = await freshHome()
     let registered
+    const mountedRoutes = []
     const connection = {
       rpc: {
-        handle(channel, handler, options) {
-          registered = { channel, handler, options }
+        handle(channel, handler) {
+          registered = { channel, handler }
           return async () => {}
         },
       },
     }
-    await boot(home, {}, { connection })
+    const webServer = { register: (path) => { mountedRoutes.push(path) } }
+    await boot(home, {}, { connection, webServer })
     assert.equal(registered.channel, '/dsh-codex-lite')
     assert.equal(typeof registered.handler, 'function')
-    assert.deepEqual(registered.options, { authority: 'trusted-host' })
+    assert.deepEqual(mountedRoutes, [], 'a raw HTTP route would answer outside the Connection fence')
   })
 
   test('the native DeepSeek route is read from its flat section, not through a providers dict', async () => {
@@ -428,5 +455,82 @@ describe('settings section', { skip }, () => {
     const home = await freshHome()
     const ctx = await boot(home, { modelOverrides: { [MODEL]: { contextWindow: 300_000 } } }, { settings: false })
     assert.equal(await windowOf(ctx), 300_000)
+  })
+
+  test('an image handle carries the path the SESSION can read, not the host location', async () => {
+    // The seam postmortem 0007 is about: the resolver lives in `apply` here
+    // and its only consumer is inside the adapter, so nothing checks that the
+    // two halves meet. test/adapter.test.js stubs the resolver parameter
+    // directly, which leaves the composed wiring — the `fs` service name, the
+    // argument order, the import — with no coverage at all: renaming
+    // `ctx.get('fs')` to a service nobody provides keeps every gate green and
+    // every test passing while the feature is permanently dead.
+    //
+    // The two paths differ on purpose. Asserting the MAPPED one, and that the
+    // host one is absent, is what distinguishes a live mapping from a resolver
+    // that never ran (both would otherwise show an unmapped placeholder).
+    const hostPath = '/dsh/attachments/pixel.png'
+    const sessionPath = '/workspace/.dsh/attachments/pixel.png'
+    const ref = {
+      attachmentId: 'sha256:0123456789abcdef',
+      mediaType: 'image/png',
+      bytes: 4,
+      width: 1,
+      height: 1,
+      name: 'pixel.png',
+    }
+    const attachments = {
+      imageHostPath: () => hostPath,
+      readImageRequest: async () => ({
+        variantId: 'sha256:request-version',
+        attachment: ref,
+        data: Uint8Array.from([137, 80, 78, 71]),
+        mediaType: 'image/png',
+        bytes: 4,
+        width: 1,
+        height: 1,
+        depth: 'uchar',
+        space: 'srgb',
+        hasAlpha: false,
+      }),
+    }
+    const fs = { processPathFromHostPath: given => (given === hostPath ? sessionPath : undefined) }
+    const home = await freshHome()
+    await writeFile(
+      join(home, '.openai-codex-auth.json'),
+      `${JSON.stringify({
+        version: 1,
+        credential: { type: 'oauth', access: accessToken(), refresh: 'rt_STORED', expires: Date.now() + 3_600_000 },
+      })}\n`,
+      { mode: 0o600 },
+    )
+    // The only case in this file that resolves a credential, so it is also the
+    // only one that needs the store pointed at the temp home.
+    const realHome = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    const ctx = await boot(home, {}, { attachments, fs })
+    const realFetch = globalThis.fetch
+    let body = ''
+    globalThis.fetch = async (input, init) => {
+      if (input instanceof Request) body = await input.clone().text()
+      else if (typeof init?.body === 'string') body = init.body
+      else if (init?.body instanceof Uint8Array) body = zstdDecompressSync(init.body).toString('utf8')
+      return new Response('probe complete', { status: 503 })
+    }
+    try {
+      for await (const _chunk of ctx.llm.stream({
+        provider: 'openai-codex',
+        model: MODEL,
+        messages: [{ role: 'user', content: [{ type: 'image', attachment: ref }] }],
+      })) {
+        // Drain the terminal chunks the adapter emits after the probe answer.
+      }
+    } finally {
+      globalThis.fetch = realFetch
+      if (realHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = realHome
+    }
+    assert.ok(body.includes(sessionPath), 'the model must be handed the path this session can actually open')
+    assert.ok(!body.includes(hostPath), 'the raw host location is not readable from the session and must not travel')
   })
 })

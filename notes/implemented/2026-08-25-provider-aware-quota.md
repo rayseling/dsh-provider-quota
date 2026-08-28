@@ -13,7 +13,7 @@
 openai-codex 给周窗口，opencode-go 给 5h/7d/1m，deepseek 给账户余额，
 其余一律不给——而不是把另一个账号的数字挂到标题上。
 
-读取留在宿主侧，走 Connection 的 trusted-host 围栏，不自建 HTTP 路由：
+读取留在宿主侧，走 Connection 的请求信任和浏览器会话认证，不自建 HTTP 路由：
 浏览器拿到的是窗口或余额加一个时间戳，access token、API key、账号 id 一个都不过界。
 每个 provider 有自己的缓存行，键是产生它的那份凭据，所以切模型不会把甲账号的数字端给乙账号。
 模型请求和额度读取共用一个 pi-ai resolver，过期 token 是在文件锁下转一次，
