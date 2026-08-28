@@ -17,18 +17,15 @@
 # WHY NO `npm install`. The manifest is not installable: `@deepseek-ai/dsh-llm-pi-ai`
 # has an unpublished transitive peer that 404s, and `--legacy-peer-deps` does
 # not help. Four test files guard their `describe` on whether the peers
-# resolve, so a bare run executes about 204 of the 276 tests and skips nine
-# suites. `--bare` accepts exactly those skips — matched on the REASON, not on
-# a list of names — and rejects every other one.
+# resolve, so a bare run executes a subset of the suite and skips the guarded
+# ones — no count here either, for the reason above; `--bare` does not pin the
+# executed number, because it depends on which peers resolve. `--bare` accepts
+# exactly those skips — matched on the REASON, not on a list of names — and
+# rejects every other one.
 #
 # WHAT GREEN HERE MEANS. The gates named in the run's own output, and the
 # node-only tests. It does NOT mean the documentation citations resolve, and it
 # does NOT mean the peer-dependent tests passed; those never ran.
-#
-# EXPECTED TO BE RED until both pending batches land: the model-allowlist
-# feature and the gate set that reads it. `catalog-wording` anchors on the
-# `enabledModels` schema, and `identity` requires CLAUDE.md to be the symlink.
-# Neither is in the history yet. Delete this paragraph once both have landed.
 
 name: CI
 
