@@ -445,7 +445,7 @@ describe('gate: identity', () => {
    */
   async function identityFixture(overrides = {}) {
     const root = await fixture({
-      'src/index.js': "export const name = 'llm-openai-codex-lite'\nexport const settingsNs = settingsNamespace('llm-openai-codex-lite')\n",
+      'src/index.js': "export const name = 'llm-openai-codex-lite'\nexport const settingsNs = 'llm-openai-codex-lite'\n",
       'src/client.js': "    var SETTINGS_NS = 'llm-openai-codex-lite'\n",
       'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite\n      name: dsh-codex-lite\n',
       'package.json': JSON.stringify({
@@ -469,7 +469,7 @@ describe('gate: identity', () => {
     // normal YAML. Neither is drift, and reporting either as a missing anchor
     // sends the reader hunting.
     const root = await identityFixture({
-      'src/index.js': 'export const name = "llm-openai-codex-lite"\nexport const settingsNs = settingsNamespace("llm-openai-codex-lite")\n',
+      'src/index.js': 'export const name = "llm-openai-codex-lite"\nexport const settingsNs = "llm-openai-codex-lite"\n',
       'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite  # the entry id\n      name: dsh-codex-lite\n',
     })
     assert.deepEqual(collectIdentityViolations(root), [])
@@ -477,12 +477,12 @@ describe('gate: identity', () => {
 
   test('rejects a drifted plugin name — the case the whole suite stays green for', async () => {
     const root = await identityFixture({
-      'src/index.js': "export const name = 'llm-openai-codex-DRIFTED'\nexport const settingsNs = settingsNamespace('llm-openai-codex-lite')\n",
+      'src/index.js': "export const name = 'llm-openai-codex-DRIFTED'\nexport const settingsNs = 'llm-openai-codex-lite'\n",
     })
     const violations = collectIdentityViolations(root)
     assert.equal(violations.length, 3, 'all three other spellings are reported, not just the first')
     assert.deepEqual(violations[0],
-      'src/index.js `settingsNamespace(...)`: spells "llm-openai-codex-lite" while src/index.js `export const name` spells "llm-openai-codex-DRIFTED". '
+      'src/index.js `export const settingsNs`: spells "llm-openai-codex-lite" while src/index.js `export const name` spells "llm-openai-codex-DRIFTED". '
       + 'These four are one identity: the Settings tab dispatches a card only to the namespace it names, so a drift here makes the card silently never arrive. '
       + "(The loader imports the entry's `name:`, not its `id:`, so the composition still loads — which is why the suite stays green.) "
       + 'Make all four agree.')
@@ -546,7 +546,7 @@ describe('gate: identity', () => {
     ])
 
     const gone = await fixture({
-      'src/index.js': "export const name = 'x'\nexport const settingsNs = settingsNamespace('x')\n",
+      'src/index.js': "export const name = 'x'\nexport const settingsNs = 'x'\n",
       'src/client.js': "var SETTINGS_NS = 'x'\n",
       'cordis.patch.yml': '- insert:\n    - id: x\n      name: dsh-codex-lite\n',
       'package.json': JSON.stringify({ name: 'dsh-codex-lite', scripts: { test: 'node scripts/check.mjs' } }),
@@ -1170,7 +1170,7 @@ describe('the remaining sample-shaped fixes', () => {
     /** @param {string} command @returns {Promise<number>} violations. */
     const violationsFor = async (command) => {
       const root = await fixture({
-        'src/index.js': "export const name = 'x'\nexport const settingsNs = settingsNamespace('x')\n",
+        'src/index.js': "export const name = 'x'\nexport const settingsNs = 'x'\n",
         'src/client.js': "var SETTINGS_NS = 'x'\n",
         'cordis.patch.yml': '- insert:\n    - id: x\n      name: dsh-codex-lite\n',
         'package.json': JSON.stringify({ name: 'dsh-codex-lite', scripts: { test: command } }),

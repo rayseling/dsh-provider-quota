@@ -21,7 +21,6 @@
  */
 
 import z from '@deepseek-ai/schemastery'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { assertEnabledModelIds, assertEnabledModelShape, assertKnownModelIds, createOpenAICodexAccessResolver, createOpenAICodexLiteAdapter, openAICodexCatalogModelIds, selectableModelIds } from './adapter.js'
 import { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } from './store.js'
 import {
@@ -73,7 +72,7 @@ export const inject = ['llm']
  * the browser card registers under — the Settings tab dispatches a card only
  * to the namespace it names, so both halves must spell this the same way.
  */
-export const settingsNs = settingsNamespace('llm-openai-codex-lite')
+export const settingsNs = 'llm-openai-codex-lite'
 
 /**
  * Per-model replacements for the installed pi-ai catalog's context window, by
@@ -136,7 +135,7 @@ const NO_OVERRIDES = Object.freeze({})
  * namespace, or a reader that throws all answer "nothing", never a throw that
  * could take the model route down with the quota read.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
- * @param {object} ns - the branded settings namespace.
+ * @param {string} ns - the settings namespace.
  * @returns {unknown} the live section, when one is attached.
  */
 function readSection(ctx, ns) {
@@ -269,8 +268,8 @@ export function apply(ctx, config) {
   // without acquiring a browser dependency; in Web, Connection owns request
   // trust plus browser-session authentication, and channel registration follows
   // this plugin's fiber on unload.
-  const piSection = () => readSection(ctx, settingsNamespace('llm-pi-ai'))
-  const nativeSection = () => readSection(ctx, settingsNamespace('llm-deepseek'))
+  const piSection = () => readSection(ctx, 'llm-pi-ai')
+  const nativeSection = () => readSection(ctx, 'llm-deepseek')
   const resolveRoute = async (provider) => {
     if (provider === 'openai-codex') return { kind: 'codex' }
     if (provider === 'opencode-go' || provider === 'opencode-go-extra') {
@@ -323,36 +322,43 @@ export function apply(ctx, config) {
   })
   // The catalog ships with the package, so the known ids are fixed for this
   // install and the write-time check costs nothing per validation.
-  try {
-    installSettingsSection(ctx, settingsNs, Config, entry, {
-      // Refuse the write rather than store a section that would size nothing:
-      // the seam runs this before it persists, so a bad edit leaves both the
-      // document and the serving route untouched, and the message it relays
-      // is the one the loader would have thrown.
-      validate: (value) => {
-        // Shape only for the allowlist: this hook also runs when the seam
-        // RESOLVES the namespace, so a catalog-membership check here turns the
-        // first boot after a pi-ai model rename into a refused section — and
-        // the refusal takes every `modelOverrides` window down with it. A
-        // retired id is dropped on read instead. `modelOverrides` stays strict:
-        // it names models the operator deliberately sized, so an id the
-        // catalog does not carry there is a configuration error, not drift.
-        assertEnabledModelShape(value?.enabledModels)
-        assertKnownModelIds(value?.modelOverrides ?? {}, catalogIds)
-      },
-      setSource: (source) => { current = source },
-      // Nothing derived from the section needs re-judging: the route set, its
-      // display name and its retry policy do not depend on configuration, and
-      // the adapter re-reads the thunk per operation.
-      onChange: () => {
-        ctx.logger.debug('dsh-codex-lite: model settings changed; the next request resolves the new model list and context window')
-      },
-    })
-  } catch (error) {
-    // A settings section is an enhancement, not a prerequisite. Losing it
-    // leaves the route serving the composition entry, which is worth saying
-    // out loud rather than failing a fiber that is otherwise healthy.
-    ctx.logger.error('dsh-codex-lite: settings section unavailable; the route keeps serving its composition entry')
-    ctx.logger.error(error)
-  }
+  //
+  // `installSection` is a method on the settings service, so the optional-service
+  // wiring is the caller's: the body runs only while a provider is attached. The
+  // owner argument is `ctx`, not `settingsCtx` — the seam uses it to tell this
+  // plugin unloading (skip the fallback) from the provider merely detaching.
+  ctx.inject(['settings'], (settingsCtx) => {
+    try {
+      settingsCtx.settings.installSection(ctx, settingsNs, Config, entry, {
+        // Refuse the write rather than store a section that would size nothing:
+        // the seam runs this before it persists, so a bad edit leaves both the
+        // document and the serving route untouched, and the message it relays
+        // is the one the loader would have thrown.
+        validate: (value) => {
+          // Shape only for the allowlist: this hook also runs when the seam
+          // RESOLVES the namespace, so a catalog-membership check here turns the
+          // first boot after a pi-ai model rename into a refused section — and
+          // the refusal takes every `modelOverrides` window down with it. A
+          // retired id is dropped on read instead. `modelOverrides` stays strict:
+          // it names models the operator deliberately sized, so an id the
+          // catalog does not carry there is a configuration error, not drift.
+          assertEnabledModelShape(value?.enabledModels)
+          assertKnownModelIds(value?.modelOverrides ?? {}, catalogIds)
+        },
+        setSource: (source) => { current = source },
+        // Nothing derived from the section needs re-judging: the route set, its
+        // display name and its retry policy do not depend on configuration, and
+        // the adapter re-reads the thunk per operation.
+        onChange: () => {
+          ctx.logger.debug('dsh-codex-lite: model settings changed; the next request resolves the new model list and context window')
+        },
+      })
+    } catch (error) {
+      // A settings section is an enhancement, not a prerequisite. Losing it
+      // leaves the route serving the composition entry, which is worth saying
+      // out loud rather than failing a fiber that is otherwise healthy.
+      ctx.logger.error('dsh-codex-lite: settings section unavailable; the route keeps serving its composition entry')
+      ctx.logger.error(error)
+    }
+  })
 }

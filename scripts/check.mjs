@@ -994,14 +994,14 @@ export function collectIdentityViolations(root) {
   const yaml = patch.replace(/#.*$/gmu, '')
   const source = stripComments(index)
   const pluginName = capture(source, /export\s+const\s+name\s*=\s*['"]([^'"]+)['"]/u, 'src/index.js `export const name`')
-  const namespace = capture(source, /settingsNamespace\(\s*['"]([^'"]+)['"]\s*\)/u, 'src/index.js `settingsNamespace(...)`')
+  const namespace = capture(source, /export\s+const\s+settingsNs\s*=\s*['"]([^'"]+)['"]/u, 'src/index.js `export const settingsNs`')
   const clientNs = capture(stripComments(client), /SETTINGS_NS\s*=\s*['"]([^'"]+)['"]/u, 'src/client.js `SETTINGS_NS`')
   const entryId = capture(yaml, /^\s*-?\s*id:\s*(\S+)\s*$/mu, 'cordis.patch.yml `id:`')
   const entryName = capture(yaml, /^\s*name:\s*(\S+)\s*$/mu, 'cordis.patch.yml `name:`')
 
   if (pluginName !== undefined) {
     const spellings = [
-      { value: namespace, where: 'src/index.js `settingsNamespace(...)`' },
+      { value: namespace, where: 'src/index.js `export const settingsNs`' },
       { value: clientNs, where: 'src/client.js `SETTINGS_NS`' },
       { value: entryId, where: 'cordis.patch.yml `id:`' },
     ]

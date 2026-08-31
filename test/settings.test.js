@@ -231,7 +231,7 @@ describe('settings section', { skip }, () => {
     // installs: flat, `settingsPath: []`, no `providers` above the fields.
     const z = schemastery.default ?? schemastery
     ctx.settings.register(
-      settings.settingsNamespace('llm-deepseek'),
+      'llm-deepseek',
       z.object({ apiKeyEnv: z.string(), baseURL: z.string() }),
       { base: { apiKeyEnv: 'DEEPSEEK_PRIVATE_KEY', baseURL: 'https://deepseek.internal.example/v1/' } },
     )
@@ -352,7 +352,7 @@ describe('settings section', { skip }, () => {
     const ctx = await boot(home, {}, { connection, credentials })
     const z = schemastery.default ?? schemastery
     ctx.settings.register(
-      settings.settingsNamespace('llm-pi-ai'),
+      'llm-pi-ai',
       z.object({ providers: z.dict(z.object({ apiKeyEnv: z.string(), baseURL: z.string() })) }),
       { base: { providers: { 'opencode-go': { apiKeyEnv: 'OPENCODE_PRIVATE_KEY', baseURL: 'https://gateway.internal.example/zen/go/v1/' } } } },
     )
@@ -391,7 +391,7 @@ describe('settings section', { skip }, () => {
     const ctx = await boot(home, {}, { connection, credentials })
     const z = schemastery.default ?? schemastery
     ctx.settings.register(
-      settings.settingsNamespace('llm-pi-ai'),
+      'llm-pi-ai',
       z.object({ providers: z.dict(z.object({ apiKeyEnv: z.string(), baseURL: z.string() })) }),
       { base: { providers: { deepseek: { apiKeyEnv: 'DEEPSEEK_PI_KEY', baseURL: 'https://deepseek.gateway.example/v1' } } } },
     )

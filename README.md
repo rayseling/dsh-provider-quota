@@ -17,7 +17,7 @@
 
 ## 安装
 
-需要 **dsh 0.1.2-alpha.1 或更新**:附件的工具可读路径和 Connection 浏览器认证是这个版本定的,`PiAiAdapter` 的 auth 注入更早——0.1.1-rc.1 起就是必填。插件按这些接口接线,不再支持旧版。新版 `llm-pi-ai` 也能原生配置 Codex;不要同时在它的 `providers` 里启用 `openai-codex`,同名路由只能注册一次。
+需要 **dsh 0.1.2-alpha.2 或更新**:设置 section 的 service API 是这个版本定的;附件的工具可读路径和 Connection 浏览器认证在 alpha.1 已定,`PiAiAdapter` 的 auth 注入更早——0.1.1-rc.1 起就是必填。插件按这些接口接线,不再支持旧版。新版 `llm-pi-ai` 也能原生配置 Codex;不要同时在它的 `providers` 里启用 `openai-codex`,同名路由只能注册一次。
 
 ```sh
 dsh plugin --profile web add file:/你克隆到的路径/dsh-codex-lite
@@ -97,7 +97,7 @@ Codex 与 OpenCode 的接口都是未公开契约:上游改动时对应显示会
 
 填了目录里没有的模型名会被**当场拒绝**,并列出所有可选的名字——不会出现"存进去了却没生效"。
 
-从别的机器访问时,先让 Web profile 的 `trustedHosts` 接受该 authority,并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。**设置卡片还得再等一版**:0.1.2-alpha.1 上非 loopback 页面的 settings scope 建在内存里,卡片渲染不出内容,修复在该版本之后才进主干。
+从别的机器访问时,先让 Web profile 的 `trustedHosts` 接受该 authority,并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。0.1.2-alpha.1 上非 loopback 页面的 settings scope 建在内存里,卡片渲染不出内容;本插件要求的 alpha.2 已含修复。
 
 ### 这个数字意味着什么
 
