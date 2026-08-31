@@ -35,6 +35,7 @@ import {
   collectDocBudgetViolations,
   collectDocRefViolations,
   collectDocSymbolViolations,
+  collectRemoteCodeViolations,
   collectIdentityViolations,
   collectImageBudgetViolations,
   collectServiceReadViolations,
@@ -148,7 +149,7 @@ describe('this checkout, checked by the runner it would be redirected away from'
     // the place where AGENTS.md bloat and a rotting workflow would show up.
     assert.deepEqual(
       allGateIds().filter(id => !bareGateIds().includes(id)),
-      ['doc-refs', 'doc-symbols'],
+      ['doc-refs', 'doc-symbols', 'remote-codes'],
     )
     for (const id of ['doc-budget', 'verify-workflow', 'service-reads']) {
       assert.ok(bareGateIds().includes(id), `${id} needs nothing external and must run in CI`)
@@ -433,6 +434,85 @@ describe('gate: doc-symbols', () => {
     })
     await symlink('nowhere.js', join(root, 'src', 'dead.js'))
     assert.doesNotThrow(() => collectDocSymbolViolations(root, undefined))
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('gate: remote-codes', () => {
+  /** A harness whose declared vocabulary is the post-rename one. */
+  const HARNESS = {
+    'packages/typert/protocol/src/types.ts':
+      "export interface RemoteErrorDetailsMap {\n  'gateway/internal': {}\n  'gateway/cancelled': {}\n}\n",
+    'packages/api/settings-controller/src/types.ts':
+      "declare module '@deepseek-ai/dsh-typert-protocol' {\n  interface RemoteErrorDetailsMap {\n"
+      + "    'settings/rejected': { readonly ns: string }\n"
+      + "    'settings/conflict': { readonly ns: string; readonly expected: number }\n  }\n}\n",
+  }
+
+  test('accepts codes the harness declares, across separate declaration merges', async () => {
+    const root = await fixture({
+      'src/client.js': "var t = error.code === 'gateway/internal' ? a : error.code === 'settings/conflict' ? b : c\n",
+    })
+    assert.deepEqual(collectRemoteCodeViolations(root, await fixture(HARNESS)), [])
+  })
+
+  test('reports the spelling the alpha.2 rename left behind', async () => {
+    // The shipped bug: `internal` and `settings-conflict` stopped matching and
+    // the settings card started rendering the carrier's English at the operator.
+    const root = await fixture({
+      'src/client.js': "var t = error.code === 'internal' ? a : error.code === 'settings-conflict' ? b : c\n",
+    })
+    const found = collectRemoteCodeViolations(root, await fixture(HARNESS))
+    assert.equal(found.length, 2)
+    assert.match(found[0], /`internal` is not a code the harness/u)
+    assert.match(found[1], /`settings-conflict` is not a code the harness/u)
+  })
+
+  test('tells a typeof guard from a comparison', async () => {
+    // `typeof result.error.code === 'string'` reads `.code === '…'` too, and
+    // reporting it put `string` in the violation list.
+    const root = await fixture({
+      'src/client.js': "var c = typeof result.error.code === 'string' ? result.error.code : undefined\n"
+        + "var t = error.code === 'gateway/internal'\n",
+    })
+    assert.deepEqual(collectRemoteCodeViolations(root, await fixture(HARNESS)), [])
+  })
+
+  test('is not satisfied by the real code appearing in a comment', async () => {
+    const root = await fixture({
+      'src/client.js': "// renamed from error.code === 'gateway/internal'\nvar t = error.code === 'internal'\n",
+    })
+    assert.equal(collectRemoteCodeViolations(root, await fixture(HARNESS)).length, 1)
+  })
+
+  test('honors a signed exemption on the comparison line', async () => {
+    const root = await fixture({
+      'src/client.js': "var t = error.code === 'quota-exhausted' // gate-exempt: remote-codes this route owns the code\n",
+    })
+    assert.deepEqual(collectRemoteCodeViolations(root, await fixture(HARNESS)), [])
+  })
+
+  test('refuses to pass when it cannot reach a harness, or reads a tree without the vocabulary', async () => {
+    const root = await fixture({ 'src/client.js': "var t = error.code === 'gateway/internal'\n" })
+    assert.match(collectRemoteCodeViolations(root, undefined)[0], /no harness checkout is reachable/u)
+    const empty = await fixture({ 'packages/util/values/src/index.ts': 'export const x = 1\n' })
+    assert.match(collectRemoteCodeViolations(root, empty)[0], /read the wrong tree/u)
+  })
+
+  test('refuses to pass a file that discriminates no codes at all', async () => {
+    const root = await fixture({ 'src/client.js': 'export const name = 1\n' })
+    assert.match(collectRemoteCodeViolations(root, await fixture(HARNESS))[0], /nothing to resolve/u)
+  })
+
+  test('skips a stale build tree, so a deleted code stops resolving', async () => {
+    const root = await fixture({ 'src/client.js': "var t = error.code === 'settings/retired'\n" })
+    const harness = await fixture({
+      ...HARNESS,
+      'packages/api/settings-controller/lib/types.d.ts':
+        "interface RemoteErrorDetailsMap {\n  'settings/retired': {}\n}\n",
+    })
+    assert.equal(collectRemoteCodeViolations(root, harness).length, 1)
   })
 })
 

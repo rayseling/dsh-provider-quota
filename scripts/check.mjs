@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsh-codex-lite gates: eight independent collectors plus a runner.
+ * dsh-codex-lite gates: eleven independent collectors plus a runner.
  *
  * `npm test` runs this, not `node --test` — see AGENTS.md. The suite alone
  * cannot be the gate, because a checkout without the peer dependencies
@@ -26,7 +26,7 @@
  *    prints the ones in force — not only `--exemptions`, which nothing
  *    requires anyone to pass.
  *
- * There is no gate graph here on purpose. Eight checks, no edges, under a
+ * There is no gate graph here on purpose. Eleven checks, no edges, under a
  * second without the suite: a `for` loop that accumulates failures and exits 1
  * is the whole scheduler. Revisit if a gate crosses ten seconds or grows a
  * real dependency edge.
@@ -111,7 +111,7 @@ const TEST_COMMAND = 'node scripts/check.mjs'
  * cite exists in the deepseek-harness tree, and refuse to report green when no
  * harness checkout is reachable. CI has none, so they run locally.
  */
-const HARNESS_ONLY_GATES = ['doc-refs', 'doc-symbols']
+const HARNESS_ONLY_GATES = ['doc-refs', 'doc-symbols', 'remote-codes']
 
 /**
  * The one skip reason a bare run is allowed to produce.
@@ -918,6 +918,134 @@ export function collectDocSymbolViolations(root, harnessRoot) {
       + 'A described mechanism can be right while its name is invented, and the name is what the next reader greps for. '
       + 'Re-open the file and cite the real name.',
     )
+}
+
+// ---------------------------------------------------------------------------
+// gate: remote-codes
+// ---------------------------------------------------------------------------
+
+/** The one module that talks to the Host over Remote. */
+const REMOTE_CONSUMER = 'src/client.js'
+
+/**
+ * Every failure code the browser module discriminates on must be one the Host
+ * can actually send.
+ *
+ * `src/client.js` decides what a failed settings write says to the operator by
+ * comparing `error.code` against literals. Both sides of that comparison are
+ * strings owned by the harness, and dsh 0.1.2-alpha.2 renamed all of them to
+ * `<domain>/<code>` (`internal` became `gateway/internal`,
+ * `settings-conflict` became `settings/conflict`). A stale spelling does not
+ * throw and does not fail to compile: it simply stops matching, and the card
+ * fell through to rendering the carrier's untranslated English at the
+ * operator. Nothing in the suite could see it, because the tests that cover
+ * those branches hand-write the same literal into a stub — postmortem 0007's
+ * shape, with the two halves in two different repositories.
+ *
+ * The declared vocabulary is every key of a `RemoteErrorDetailsMap` block
+ * under the harness's `packages/**\/src/**`, which is where each owning
+ * package declaration-merges its own codes.
+ *
+ * Scope, and what this cannot prove:
+ *
+ *  - only `REMOTE_CONSUMER` is read. The host-side modules compare `.code`
+ *    against Node errno (`ENOENT`) and pi-ai error shapes, which are not this
+ *    vocabulary; `service-reads` skips this file for the mirror-image reason.
+ *  - the anchor is `.code === '…'`, so the plugin's OWN quota codes — passed
+ *    to `quotaFailureText(code, …)` as a bare parameter — are not judged, and
+ *    `var c = error.code; c === 'gateway/internal'` slips past exactly the way
+ *    `ctx['settings']` slips past `service-reads`. Rewriting a plugin-owned
+ *    comparison into `error.code === '…'` will be flagged; sign it with
+ *    `// gate-exempt: remote-codes <reason>`.
+ *  - a code being DECLARED does not mean this endpoint can send it. That the
+ *    branch is reachable is the suite's job, not this gate's.
+ * @param {string} root - checkout to scan.
+ * @param {string|undefined} harnessRoot - harness checkout, when reachable.
+ * @returns {string[]} one message per violation.
+ */
+export function collectRemoteCodeViolations(root, harnessRoot) {
+  const raw = readText(root, REMOTE_CONSUMER)
+  if (raw === undefined) {
+    return [`${REMOTE_CONSUMER}: absent, so the Remote failure codes this gate resolves cannot be read. `
+      + 'Reporting green here would claim a check that never ran. Run from a checkout root.']
+  }
+  const exempt = exemptionsIn(raw, 'remote-codes')
+  // Length-preserving, so the row index is the file's own line number, and a
+  // code named in a comment cannot satisfy the gate on the line below it.
+  const rows = stripComments(raw).split(/\r?\n/u)
+  const found = []
+  for (let i = 0; i < rows.length; i++) {
+    // The receiver is matched so a `typeof x.code === 'string'` GUARD can be
+    // told from a comparison against a code: both read `.code === '…'`, and
+    // reading the first as a violation would put `string` in the report.
+    for (const hit of rows[i].matchAll(/(typeof\s+)?[\w$.]*\.code\s*[!=]==?\s*'([^']*)'/gu)) {
+      if (hit[1] !== undefined) continue
+      found.push({ line: i + 1, code: hit[2] })
+    }
+  }
+  // Exemptions are subtracted AFTER the count: a file whose every comparison
+  // is signed has still been read, and reporting it as "nothing to resolve"
+  // would send the reader looking for a gate that had in fact done its job.
+  const wanted = found.filter(item => !exempt.lines.has(item.line))
+  if (found.length === 0) {
+    return [`${REMOTE_CONSUMER}: no \`.code === '…'\` comparison found, so this gate has nothing to resolve. `
+      + 'It was added because the browser half silently stopped matching a renamed Host code; a version of this file '
+      + 'that discriminates failures some other way needs the gate rewritten, not left passing vacuously.']
+  }
+  if (wanted.length === 0) return []
+  if (harnessRoot === undefined) return [harnessUnreachable('remote-codes', wanted.length)]
+
+  const declared = declaredRemoteCodes(harnessRoot)
+  if (declared.size === 0) {
+    return [`remote-codes: no \`RemoteErrorDetailsMap\` declaration found under ${harnessRoot}/packages. `
+      + 'The harness owns this vocabulary, so an empty set means this gate read the wrong tree rather than that every '
+      + 'code is fine. Point `DSH_HARNESS_ROOT` at a deepseek-harness checkout.']
+  }
+  return wanted
+    .filter(item => !declared.has(item.code))
+    .map(item =>
+      `${REMOTE_CONSUMER}:${item.line}: \`${item.code}\` is not a code the harness at ${harnessRoot} declares. `
+      + 'A comparison against a code the Host cannot send throws nothing and fails nothing — the branch just never '
+      + `runs, and the operator gets whichever fallback sits beside it. Grep the harness for the ${item.code.includes('/') ? 'renamed' : 'namespaced'} `
+      + 'spelling in a `RemoteErrorDetailsMap` block and use that, or sign the line `// gate-exempt: remote-codes <reason>`.',
+    )
+}
+
+/**
+ * Every Remote failure code the harness declares.
+ *
+ * Each owning package declaration-merges its own keys into
+ * `RemoteErrorDetailsMap`, so the set is the union of every such block rather
+ * than one list. `lib/` is skipped because it is built output: a code deleted
+ * from `src/` but still present in a stale build would keep resolving.
+ * @param {string} harnessRoot - the harness checkout.
+ * @returns {Set<string>} declared codes.
+ */
+function declaredRemoteCodes(harnessRoot) {
+  const codes = new Set()
+  const marker = 'interface RemoteErrorDetailsMap'
+  for (const file of walk(join(harnessRoot, 'packages'), /\.ts$/u, ['node_modules', 'lib'])) {
+    if (!file.includes(`${sep}src${sep}`)) continue
+    let text
+    try {
+      text = readFileSync(file, 'utf8')
+    } catch {
+      continue
+    }
+    for (let at = text.indexOf(marker); at !== -1; at = text.indexOf(marker, at + marker.length)) {
+      const open = text.indexOf('{', at)
+      if (open === -1) break
+      let depth = 0
+      let end = open
+      for (; end < text.length; end++) {
+        if (text[end] === '{') depth++
+        else if (text[end] === '}' && --depth === 0) break
+      }
+      for (const key of text.slice(open, end).matchAll(/'([^']+)'\s*(?:\?\s*)?:/gu)) codes.add(key[1])
+      at = end
+    }
+  }
+  return codes
 }
 
 // ---------------------------------------------------------------------------
@@ -1809,6 +1937,11 @@ function gates(root, { bare = false } = {}) {
       id: 'doc-symbols',
       run: () => collectDocSymbolViolations(root, harness),
       summary: () => `doc-symbols: ${docs.length} document(s) scanned; ${harnessNote}. Judges the CapitalCase head of \`Name.member\`, and \`name()\` — the member half is prose, and so is anything with the backticks removed.`,
+    },
+    {
+      id: 'remote-codes',
+      run: () => collectRemoteCodeViolations(root, harness),
+      summary: () => `remote-codes: every \`.code === '…'\` in ${REMOTE_CONSUMER} resolved against the harness's declared \`RemoteErrorDetailsMap\`; ${harnessNote}. Proves the code exists, not that this endpoint can send it.`,
     },
     {
       id: 'suite',

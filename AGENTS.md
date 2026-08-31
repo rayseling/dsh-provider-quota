@@ -3,7 +3,7 @@
 > 给**任何**改动本仓库的人和 agent 看（`AGENTS.md` 是跨工具约定的文件名）。
 > `CLAUDE.md` 是指向这里的软链，别在那边另写一份。
 
-## 八条已经咬过人的坑
+## 九条已经咬过人的坑
 
 共同点：出错时没有异常、没有红字，只有一个看起来正常、其实内容已经被悄悄改掉的结果。
 每条都有完整复盘（症状 / 原因 / **为什么每层防线都没拦住**），点进去看。
@@ -18,33 +18,34 @@
 | [6](notes/postmortems/0006-fabricated-class-name-in-the-instructions.md) | 文档里带反引号的符号名是一句「这是真的」的断言。不确定就别加反引号 | `doc-symbols` 门 |
 | [7](notes/postmortems/0007-the-picker-that-saved-into-nothing.md) | 设置 key 的**写方和读方分处两模块**时 seam 不查两半是否都在。少一半：写入成功、落盘、无人读、界面报成功 | 无，只能靠人问 |
 | [8](notes/postmortems/0008-a-docstring-ate-the-export.md) | 漏一个 `*/`，注释会吞到**下一个** `*/`，中间的 `export` 被吃掉而语法合法 | `scanProblems`（在 `service-reads` / `deps` 里跑） |
+| [9](notes/postmortems/0009-a-renamed-failure-code-stopped-matching.md) | 宿主的失败码归 `<域>/<码>` 管，且会改名。比较两边都是字符串：改名后不抛错，只是不再匹配，落到旁边的兜底 | `remote-codes` 门 |
 
 设计理由（为什么这么做、当时否决了什么）在 [`notes/implemented/`](notes/implemented/README.md)。
 
 ## 门禁：`npm test`
 
 ```sh
-npm test            # 十道门 + 整套测试；这是唯一算数的那个命令
+npm test            # 十一道门 + 整套测试；这是唯一算数的那个命令
 npm run test:raw    # 只跑 node --test，给紧编辑循环用——它不是证据
 node scripts/check.mjs --only=<门名>    # 单跑一道
 node scripts/check.mjs --exemptions     # 列出每一条豁免
 ```
 
-十个纯 collector 加一个 `for` 循环，没有调度器（门名跑 `--help` 就有）。
+十一个纯 collector 加一个 `for` 循环，没有调度器（门名跑 `--help` 就有）。
 **每道门的机制、作用域、以及它证明不了什么，写在对应 collector 的头注释里**——这里不重抄。
 
 `identity` 里最要命的一条：**`scripts.test` 必须还在跑 `node scripts/check.mjs`**。
-改掉它十道门当场全消失，而 `npm test` 照印绿色。兜底的是 `test/check.test.js` 那条自检
+改掉它十一道门当场全消失，而 `npm test` 照印绿色。兜底的是 `test/check.test.js` 那条自检
 （断言本仓库 `identity` 干净），所以绕过会让**它重定向过去的那个 runner** 变红。
 
-**CI 跑 `--bare`：除 `doc-refs` / `doc-symbols` 外全部**（这两道够不到 harness 就报红，留本地）。
+**CI 跑 `--bare`：除 `doc-refs` / `doc-symbols` / `remote-codes` 外全部**（够不到 harness 就报红，留本地）。
 裸模式**反着定义**，新加的门默认进 CI，所以这里不写数字——跑的时候它自己打印。
 理由见 [`ci.yml`](.github/workflows/ci.yml) 头注释。
 
 ### skip 不是通过，todo 也不是
 
 `node --test` 单独跑**会撒谎**。裸检出里它报 `# tests 204 / skipped 0`、退出码 0，
-而完整检出是 287 条（权威数字在 `scripts/expected.json`）。`describe(name, { skip }, fn)` 不展开子树，整个 suite 记成一行
+而完整检出是 303 条（权威数字在 `scripts/expected.json`）。`describe(name, { skip }, fn)` 不展开子树，整个 suite 记成一行
 `ok N - … # SKIP`，里面的测试**既不进 `# tests` 也不进 `# skipped`**。
 
 - 那四份 skip 守卫（`adapter`/`bin`/`settings`/`store`）是给别人在裸检出里读代码用的，
@@ -63,7 +64,7 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 | `src/` 任何行为 | `npm test` |
 | `src/client.js` | `npm test` + **真开一次 `dsh web` 看**；commit message 里写明「手动验证：dsh web，截图 `.shots/<名>.png`」 |
 | `src/index.js` 的 settings 形状 | `npm test`，重点看 `test/settings.test.js`（启的是真 seam，不是桩） |
-| 文档 | `npm test`；引 `packages/…` 要设 `DSH_HARNESS_ROOT`，否则两道文档门**报红**（查不了就说查不了） |
+| 文档 | `npm test`；引 `packages/…` 要设 `DSH_HARNESS_ROOT`，否则文档门**报红**（查不了就说查不了） |
 | `scripts/check.mjs` | `npm test`，并且**把 bug 塞回去看它变红**再还原 |
 | `package.json` / `cordis.patch.yml` | `npm test` |
 
@@ -76,9 +77,7 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
   唯一验证手段是人去看真实的 `dsh web`。
 - **`login` 的 OAuth 零执行**；Windows 权限位按平台 skip；`cordis.patch.yml` 只比字符串。
 - **`npm install` 装不起来**（未发布的传递 peer 会 404）。`deps` 管的是清单**诚实**，不是可安装性。
-- **CI 绿不代表文档引用解析得到**（那两道留在本地），也不代表 peer 测试跑过（在 CI 里它们从不执行）。
-  **两批 commit 落地之前 CI 是红的，这是预期**（`catalog-wording` 锚在 `enabledModels` 上，
-  `identity` 要 `CLAUDE.md` 是软链，都还没进历史）。
+- **CI 绿不代表文档引用和失败码解析得到**（那三道留在本地），也不代表 peer 测试跑过（在 CI 里它们从不执行）。
 - **裸模式的 skip 判据是按 reason 文本匹配的**：一条 flaky 测试只要把理由写成
   「peer dependencies are not installed」就能混过去。这是为了不多维护一份 suite 名单而接受的代价。
 - **已知绕得过去的**：`ctx['settings']`、`const c = ctx; c.settings`、去掉反引号、
@@ -104,7 +103,7 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 
 - **只汇报你真正跑过的命令。** 没跑就写「未跑」，别写「应该跑 X / Y / Z」。
 - 说「这只是环境问题」不禁止，但要拆成可核查的项：确切命令、失败在哪一步、平台差异、其余检查是否仍绿。
-- **本地就是唯一的门**（这个仓库没有 CI），所以上一条不是礼节，是唯一的记录。
+- **CI 少跑三道门**，本地才是完整的那次，所以上一条不是礼节，是唯一的记录。
 
 ## 语言与文档约定
 

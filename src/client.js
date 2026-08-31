@@ -1146,17 +1146,24 @@
           var error = response && response.error ? response.error : undefined
           // Three classes, and only one of them is the seam talking. A dropped
           // link is an OUTCOME here, not a rejection: API Gateway catches the
-          // carrier throw and resolves `internal` carrying its own English
-          // assembly string (`client api: settings/mutate failed: …`), and it
-          // reuses that code for a namespace withdrawn mid-call. Rendering
-          // either verbatim puts untranslated internals in front of the
-          // operator, so both take the offline copy. A conflict is the
+          // carrier throw and resolves `gateway/internal` carrying its own
+          // English assembly string (`client api: settings/mutate failed: …`),
+          // and it reuses that code for a namespace withdrawn mid-call.
+          // Rendering either verbatim puts untranslated internals in front of
+          // the operator, so both take the offline copy. A conflict is the
           // operator's to resolve, so it gets copy of its own; what is left is
-          // `settings-rejected`, the seam's own sentence, which for a refused
+          // `settings/rejected`, the seam's own sentence, which for a refused
           // model id already lists every id the catalog carries.
-          self.failure = error === undefined || error.code === 'internal'
+          //
+          // These codes are the Host's vocabulary, not ours: dsh 0.1.2-alpha.2
+          // renamed every one of them to `<domain>/<code>`, and because both
+          // halves of the comparison are strings, the stale spelling kept
+          // matching nothing and quietly demoted a conflict to raw English.
+          // The `remote-codes` gate resolves each literal below against the
+          // harness's declared vocabulary.
+          self.failure = error === undefined || error.code === 'gateway/internal'
             ? text.offline
-            : error.code === 'settings-conflict' ? text.conflict : error.message
+            : error.code === 'settings/conflict' ? text.conflict : error.message
         }
         self.saving = false
         self.publish()

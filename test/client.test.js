@@ -94,7 +94,7 @@ function fakeContext(overrides = {}) {
   // `acceptView` REPLACES the row whose `ns` matches and appends otherwise. A
   // fake that ignored `ns` would accept a view stripped of it, which against
   // the real mirror lands as a phantom row — the card's revision never moves
-  // and every later save comes back `settings-conflict`.
+  // and every later save comes back `settings/conflict`.
   // Every call the card makes across a seam, RECORDED rather than asserted in
   // place. Production catches on all three of these paths — the catalog read
   // sits in a try/catch, the write in a promise chain, the fold in its own
@@ -1285,7 +1285,7 @@ describe('save', () => {
   })
 
   test('answers a conflict with copy the operator can act on', async () => {
-    const face = saving(() => Promise.resolve({ ok: false, error: { code: 'settings-conflict', message: 'revision 7 is stale' } }))
+    const face = saving(() => Promise.resolve({ ok: false, error: { code: 'settings/conflict', message: 'revision 7 is stale' } }))
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
     const { failure } = face.hooks.codexCard.getSnapshot()
@@ -1295,13 +1295,18 @@ describe('save', () => {
 
   test('reports a write that never reached the host, in the operator\'s language', async () => {
     // A dropped link does not reject. API Gateway catches the carrier throw
-    // and RESOLVES `internal`, carrying its own English assembly string — so
-    // this arrives on the fulfilment path, and rendering `error.message`
-    // verbatim would put `client api: settings/mutate failed: …` on a
-    // Chinese card.
+    // and RESOLVES `gateway/internal`, carrying its own English assembly
+    // string — so this arrives on the fulfilment path, and rendering
+    // `error.message` verbatim would put `client api: settings/mutate
+    // failed: …` on a Chinese card.
+    //
+    // The code below is the HOST's spelling, hand-copied into a stub: this
+    // test stayed green through the 0.1.2-alpha.2 rename that broke the card,
+    // because nothing here reads the vocabulary the Host actually ships. The
+    // `remote-codes` gate does.
     const face = saving(() => Promise.resolve({
       ok: false,
-      error: { code: 'internal', message: 'client api: settings/mutate failed: transport failure for /api: HTTP 502', details: {} },
+      error: { code: 'gateway/internal', message: 'client api: settings/mutate failed: transport failure for /api: HTTP 502', details: {} },
     }))
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
@@ -1314,7 +1319,7 @@ describe('save', () => {
   test('reports a withdrawn namespace the same way, since neither is the seam refusing', async () => {
     const face = saving(() => Promise.resolve({
       ok: false,
-      error: { code: 'internal', message: 'client api: Remote method settings/mutate is no longer mounted', details: {} },
+      error: { code: 'gateway/internal', message: 'client api: Remote method settings/mutate is no longer mounted', details: {} },
     }))
     face.edit('gpt-5.6-sol', '900k')
     await face.save()
@@ -1365,7 +1370,7 @@ describe('save', () => {
     ctx.remote.settings.mutate = (_namespace, _ops, expectedRevision) => {
       sent.push(expectedRevision)
       if (expectedRevision !== hostRevision) {
-        return Promise.resolve({ ok: false, error: { code: 'settings-conflict', message: 'stale' } })
+        return Promise.resolve({ ok: false, error: { code: 'settings/conflict', message: 'stale' } })
       }
       hostRevision += 1
       return Promise.resolve({ ok: true, value: { ns: settingsNs, user: {}, revision: hostRevision } })
