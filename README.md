@@ -97,7 +97,7 @@ Codex 与 OpenCode 的接口都是未公开契约:上游改动时对应显示会
 
 填了目录里没有的模型名会被**当场拒绝**,并列出所有可选的名字——不会出现"存进去了却没生效"。
 
-从别的机器访问时,先让 Web profile 的 `trustedHosts` 接受该 authority,并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。0.1.2-alpha.1 上非 loopback 页面的 settings scope 建在内存里,卡片渲染不出内容;本插件要求的 alpha.2 已含修复。
+从别的机器访问时,先让 Web profile 的 `trustedHosts` 接受该 authority,并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。**到 alpha.2 为止**,非 loopback 页面的 settings scope 仍建在内存里,卡片渲染不出内容——额度胶囊照常,设置卡片要 alpha.2 之后的宿主。
 
 ### 这个数字意味着什么
 
