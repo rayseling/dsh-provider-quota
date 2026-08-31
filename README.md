@@ -81,7 +81,7 @@ llm-openai-codex-lite:
 | `opencode-go` / `opencode-go-extra` | `GET {该路由实际 baseURL}/usage`(未公开接口,cc-switch#6433 发现) | 该路由配置的 `apiKeyEnv`(默认 `OPENCODE_GO_API_KEY`),回退 `llm-pi-ai` 存储的 API key 记录,再回退 OpenCode CLI 的 `auth.json`;同时携带 Bearer 与 `x-api-key` |
 | `deepseek-official` / `deepseek` | `GET {该路由实际 baseURL}/user/balance`(官方接口) | 该路由配置的 `apiKeyEnv`(默认 `DEEPSEEK_API_KEY`),经 credentials seam 解析 |
 
-OpenCode Go 返回「已用」百分比,面板另算一个剩余显示在旁边;DeepSeek 金额保持 API 返回的十进制字符串,不做浮点换算。浏览器通过 Harness Connection RPC 的 `/dsh-codex-lite` channel 拿到标准化结果;Connection 会先校验 Host / Origin / Fetch-Site 和浏览器会话。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
+两个百分比上游给的都是「已用」,原样显示,旁边的剩余是 100 减出来的;DeepSeek 金额保持 API 返回的十进制字符串,不做浮点换算。浏览器通过 Harness Connection RPC 的 `/dsh-codex-lite` channel 拿到标准化结果;Connection 会先校验 Host / Origin / Fetch-Site 和浏览器会话。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
 
 Codex 与 OpenCode 的接口都是未公开契约:上游改动时对应显示会变成「额度暂不可用」,不影响模型请求;点「刷新」可以重试。若上游本来就没给这个账户返回额度窗口,面板说明的是这件事,而不是一句「重试」——重试改变不了它。
 
