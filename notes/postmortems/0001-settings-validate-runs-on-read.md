@@ -3,7 +3,7 @@
 **症状**：某次 `dsh plugin update` 之后，用户在卡片里设的上下文长度悄悄变回默认值。
 界面没有任何提示，只有两行日志。
 
-**原因**：`installSettingsSection` 的 `validate` 钩子，被 `SettingsProvider.register`
+**原因**：安装 section 的那一层 API（当时叫 installSettingsSection，现在挂在 `SettingsProvider.installSection` 上）的 `validate` 钩子，被 `SettingsProvider.register`
 在**解析这份设置时**就调用了（`packages/settings/settings/src/index.ts` 里
 `resolved: deepFreeze(this.resolve(..., validate))`），也就是每次启动都会跑一遍——不只是写入时。
 

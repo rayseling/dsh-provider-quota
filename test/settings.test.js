@@ -90,6 +90,23 @@ const windowOf = async (ctx, model = MODEL) =>
   (await ctx.llm.resolveModelInfo('openai-codex', model)).context.contextWindow
 const listedModelsOf = async ctx => (await ctx.llm.listModels('openai-codex')).map(model => model.id)
 
+/**
+ * Poll a predicate until it holds or two seconds pass, then fail loudly.
+ * The settings seam delivers attach/detach work asynchronously, so a plain
+ * read right after a provider mount or dispose can race it.
+ * @param {() => Promise<unknown>|unknown} fn - the predicate to poll.
+ * @param {string} what - what the predicate was waiting for, for the failure message.
+ */
+async function eventually(fn, what) {
+  const deadline = Date.now() + 2000
+  for (;;) {
+    const value = await fn()
+    if (value) return value
+    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`)
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+}
+
 describe('settings section', { skip }, () => {
   test('the composition entry serves as the base layer', async () => {
     const home = await freshHome()
@@ -455,6 +472,58 @@ describe('settings section', { skip }, () => {
     const home = await freshHome()
     const ctx = await boot(home, { modelOverrides: { [MODEL]: { contextWindow: 300_000 } } }, { settings: false })
     assert.equal(await windowOf(ctx), 300_000)
+  })
+
+  test('a provider that attaches later, detaches, and reattaches tracks each transition', async () => {
+    // The migration moved the optional-service wiring into the caller, and the
+    // seam's `installSection(owner, ...)` treats the owner argument as the
+    // consumer fiber: a provider detach runs its entry fallback only while the
+    // owner is still loading. Passing the inject fiber (`settingsCtx`) instead
+    // of the plugin fiber (`ctx`) keeps every gate green while a detached
+    // provider leaves the stale user section serving — the one-way bug this
+    // test discriminates. Each transition is asserted through the window the
+    // route actually publishes, not through the seam's own bookkeeping.
+    const home = await freshHome()
+    await writeFile(
+      join(home, 'settings.yaml'),
+      `${plugin.settingsNs}:\n  modelOverrides:\n    ${MODEL}:\n      contextWindow: 900000\n`,
+      { mode: 0o600 },
+    )
+    const ctx = new cordis.Context()
+    disposers.push(() => ctx.fiber.dispose())
+    await ctx.plugin(llm.LlmRuntime)
+    // The plugin's settings-change hook is the observable the unload assertion
+    // reads: debug is level 3, and the exporter threshold admits it.
+    const messages = []
+    ctx.logger.exporter({
+      levels: { default: 3 },
+      export: (message) => { messages.push(message) },
+    })
+    const changeMessage = 'dsh-codex-lite: model settings changed; the next request resolves the new model list and context window'
+    const changeCount = () => messages.filter(message =>
+      message.type === 'debug' && message.args[0] === changeMessage).length
+    const consumer = ctx.plugin(plugin, { modelOverrides: { [MODEL]: { contextWindow: 300_000 } } })
+    await consumer
+    assert.equal(await windowOf(ctx), 300_000, 'no provider yet: the composition entry serves')
+    assert.equal(changeCount(), 0, 'and no section was installed to announce a change')
+
+    let providerFiber = ctx.plugin(settingsFile.FileSettingsProvider, { path: join(home, 'settings.yaml'), watch: false })
+    await providerFiber
+    await eventually(async () => (await windowOf(ctx)) === 900_000, 'the late-attached provider to serve the stored section')
+    assert.equal(changeCount(), 1, 'the attach announced exactly one change')
+
+    await providerFiber.dispose()
+    await eventually(async () => (await windowOf(ctx)) === 300_000, 'the detach to restore the composition entry')
+    assert.equal(changeCount(), 2, 'the detach announced the fallback')
+
+    providerFiber = ctx.plugin(settingsFile.FileSettingsProvider, { path: join(home, 'settings.yaml'), watch: false })
+    await providerFiber
+    await eventually(async () => (await windowOf(ctx)) === 900_000, 'the reattached provider to serve the stored section again')
+    assert.equal(changeCount(), 3, 'the reattach announced exactly one change')
+
+    await consumer.dispose()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(changeCount(), 3, 'unloading the plugin must not re-derive settings through the section')
   })
 
   test('an image handle carries the path the SESSION can read, not the host location', async () => {

@@ -4,7 +4,7 @@
 
 ## 问题
 
-`installSettingsSection` 的 `validate` 钩子看起来是「写入前校验」的地方，
+`SettingsProvider.installSection`（当时叫 installSettingsSection）的 `validate` 钩子看起来是「写入前校验」的地方，
 所以「`enabledModels` 里的模型必须在目录里」很自然会被写进去。
 
 但这个钩子在 seam **解析**这份设置时也会跑，也就是每次启动一遍。
