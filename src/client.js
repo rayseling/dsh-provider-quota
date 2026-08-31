@@ -139,7 +139,7 @@
         offline: '没保存成功,连接中断了。请稍后重试。',
         derived: '{value} tokens · 默认预设下约 {trigger} 时开始压缩较早的对话',
         note: '这个数字只用于本机记账:会话能保留多少历史、什么时候开始压缩。模型真实的上下文上限不会因此变大,而且超出模型原生长度的输入会按更高的价格档计费。',
-        quotaBadge: '周剩余 {remaining}%',
+        quotaBadge: '周已用 {used}%',
         windowsTitle: '额度',
         window5h: '5 小时',
         window7d: '7 天',
@@ -199,7 +199,7 @@
         offline: 'Not saved — the connection dropped. Please try again.',
         derived: '{value} tokens · with the default preset, compaction starts around {trigger}',
         note: 'This number is local bookkeeping only: how much history a conversation keeps, and when compaction starts. It does not raise the model’s real context limit, and input past the model’s native length is billed at a higher tier.',
-        quotaBadge: 'Weekly {remaining}% left',
+        quotaBadge: 'Weekly {used}% used',
         windowsTitle: 'Usage',
         window5h: '5h',
         window7d: '7d',
@@ -545,7 +545,7 @@
     }
 
     /**
-     * The capsule text for one provider family. Windows show the remaining
+     * The capsule text for one provider family. Windows show the used
      * percentage — one or both Codex windows, all three for OpenCode — and
      * DeepSeek shows the account balance. While loading or after a failure
      * the capsule reads "额度 …" / "额度 --" in the muted style.
@@ -558,10 +558,10 @@
       if (usage !== undefined && usage !== null && usage.kind === 'windows' && usage.windows.length > 0) {
         var weekly = weeklyWindowOf(usage)
         if (weekly !== undefined && usage.windows.length === 1) {
-          return text.quotaBadge.replace('{remaining}', formatPercent(weekly.remainingPercent))
+          return text.quotaBadge.replace('{used}', formatPercent(weekly.usedPercent))
         }
         return usage.windows.map(function (window) {
-          return window.id + ' ' + formatPercent(window.remainingPercent) + '%'
+          return window.id + ' ' + formatPercent(window.usedPercent) + '%'
         }).join(' · ')
       }
       if (usage !== undefined && usage !== null && usage.kind === 'balance') {
@@ -1270,15 +1270,15 @@
       return entry
     }
 
-    /** One usage-window row: remaining first, used and reset beneath it. */
+    /** One usage-window row: used first, remaining and reset beneath it. */
     function windowRowElement(window, text, language) {
       var h = React.createElement
       var remaining = formatPercent(window.remainingPercent)
       var used = formatPercent(window.usedPercent)
       return h('div', { key: window.id, className: 'dcl-window' },
         h('div', { className: 'dcl-quotaNumbers' },
-          h('strong', { className: 'dcl-quotaFigure' }, text.remainingLabel.replace('{remaining}', remaining)),
-          h('span', { className: 'dcl-quotaSub' }, text.usedLabel.replace('{used}', used))),
+          h('strong', { className: 'dcl-quotaFigure' }, text.usedLabel.replace('{used}', used)),
+          h('span', { className: 'dcl-quotaSub' }, text.remainingLabel.replace('{remaining}', remaining))),
         h('div', {
           className: 'dcl-quotaTrack',
           role: 'progressbar',

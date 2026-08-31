@@ -828,10 +828,10 @@ describe('provider route state', () => {
     assert.equal(state.routes.opencode.usage.windows[0].remainingPercent, 90)
   })
 
-  test('capsule copy shows remaining, three OpenCode windows, and DeepSeek balance', () => {
+  test('capsule copy shows used, three OpenCode windows, and DeepSeek balance', () => {
     const { quotaChipLabel, quotaChipReady, TEXT } = materialize().exports
     const text = TEXT.zh
-    assert.equal(quotaChipLabel({ state: 'ready', usage: { kind: 'windows', windows: [{ id: '7d', usedPercent: 40, remainingPercent: 60 }] } }, text), '周剩余 60%')
+    assert.equal(quotaChipLabel({ state: 'ready', usage: { kind: 'windows', windows: [{ id: '7d', usedPercent: 40, remainingPercent: 60 }] } }, text), '周已用 40%')
     assert.equal(quotaChipLabel({
       state: 'ready',
       usage: {
@@ -841,7 +841,7 @@ describe('provider route state', () => {
           { id: '7d', usedPercent: 20, remainingPercent: 80 },
         ],
       },
-    }, text), '5h 90% · 7d 80%')
+    }, text), '5h 10% · 7d 20%')
     assert.equal(quotaChipLabel({
       state: 'ready',
       usage: {
@@ -852,7 +852,7 @@ describe('provider route state', () => {
           { id: '1m', usedPercent: 30, remainingPercent: 70 },
         ],
       },
-    }, text), '5h 90% · 7d 80% · 1m 70%')
+    }, text), '5h 10% · 7d 20% · 1m 30%')
     assert.equal(quotaChipLabel({ state: 'ready', usage: { kind: 'balance', isAvailable: true, balances: [{ currency: 'CNY', totalBalance: '110.00' }] } }, text), '余额 ¥110.00')
     assert.equal(quotaChipLabel({ state: 'failed', failure: 'no-credential', usage: undefined }, text), '额度 --')
     assert.equal(quotaChipLabel({ state: 'loading', usage: undefined }, text), '额度 …')
