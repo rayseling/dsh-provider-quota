@@ -1,8 +1,10 @@
 # 0004 · 收窄 `listModels` 不只影响模型选择器
 
+> **0.5.0 起本仓库不再有这段代码**：模型路由交回宿主的 `llm-pi-ai`，本文留档，再写同类代码时先读它。下面的符号名是当时的，本仓库已查不到。
+
 **症状**：还没有咬到人——这一条是**在设计时**发现的，写下来是为了别把文案写错。
 
-**事实**：`SelectivePiAiAdapter.listModels` 过滤掉的模型，会从**所有宿主侧目录查询**里消失。
+**事实**：SelectivePiAiAdapter.listModels 过滤掉的模型，会从**所有宿主侧目录查询**里消失。
 收口是 `ctx.llm.listModels` 本身，宿主侧三处枚举各自独立调它：
 `packages/api/session-controller/src/catalog.ts` 的 `buildModelCatalog`（浏览器目录）、
 `packages/subagent/tool-subagent/src/list-models.ts`、`packages/acp/acp/src/model-control.ts`。

@@ -1,28 +1,30 @@
 /**
- * dsh-codex-lite — the ChatGPT-subscription model route for DeepSeek Harness,
- * and nothing else: `ctx.llm` gains the `openai-codex` provider (pi-ai's
- * official catalog: models, wire protocol, OAuth refresh) backed by an
- * owner-only credential file under `$DSH_HOME`. Sign-in is the terminal
- * `dsh-codex-lite login` command. In a Web composition it also registers one
- * read-only Connection RPC that answers the account-level usage of the
- * session's current model route — Codex 5h/7d windows, OpenCode Go 5h/7d/1m
- * windows, or the official DeepSeek balance — for the Settings card and the
- * session-header chip; Connection applies request trust and browser-session
- * authentication first, and every credential stays host-side.
- * It registers no tools or search provider and changes no defaults.
+ * dsh-codex-lite — the account-quota surface for the model routes a Harness
+ * composition already serves, and nothing else.
  *
- * The editable fields have three layers, each overriding the one above: the
- * schema's catalog default, the composition entry (the deployment baseline),
- * and the user layer in `$DSH_HOME/settings.yaml`. The settings
- * seam owns the merge; a change there reaches the next request without a
- * restart, because the route reads its configuration through a thunk rather
- * than closing over the value it was composed with.
+ * It registers one read-only Connection RPC that answers the account-level
+ * usage of the session's current model route — Codex 5h/7d windows, OpenCode
+ * Go 5h/7d/1m windows, or the official DeepSeek balance — for the Settings
+ * card and the session-header chip. Connection applies request trust and
+ * browser-session authentication first, and every credential stays host-side.
+ *
+ * It registers no model route. The `openai-codex` route is the harness's own
+ * `llm-pi-ai` plugin's to serve: that package reached pi-ai's OAuth catalog
+ * provider, per-route `models:` narrowing and per-model field overrides, which
+ * is everything the adapter this plugin used to register existed for. Two
+ * registrations of one route id are a `DUPLICATE_ADAPTER` failure at load, so
+ * serving it here is not a choice a deployment could make alongside the native
+ * one. What the harness does not have is this: the private usage endpoints.
+ *
+ * The Codex credential is read through the harness credential plane at the
+ * record `llm-pi-ai` itself writes, so the quota read and the model requests
+ * share one grant and one refresh (see `./credentials.js`).
  * @module dsh-codex-lite
  */
 
 import z from '@deepseek-ai/schemastery'
-import { assertEnabledModelIds, assertEnabledModelShape, assertKnownModelIds, createOpenAICodexAccessResolver, createOpenAICodexLiteAdapter, openAICodexCatalogModelIds, selectableModelIds } from './adapter.js'
-import { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER } from './store.js'
+import { createCodexCredentialStore, readCodexCredential } from './credentials.js'
+import { createOpenAICodexAccessResolver } from './token.js'
 import {
   CodexUsageError,
   createProviderUsageRpc,
@@ -33,14 +35,12 @@ import {
 } from './usage.js'
 import { credentialKey, credentialRef, isCredentialKeySegment } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
-import { resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 
-export { assertEnabledModelIds, assertEnabledModelShape, createOpenAICodexAccessResolver, createOpenAICodexLiteAdapter, openAICodexCatalogModelIds, selectableModelIds } from './adapter.js'
-export { OpenAICodexCredentialStore, OPENAI_CODEX_PROVIDER, openAICodexAuthPath } from './store.js'
-export { loginOpenAICodex, logoutOpenAICodex, openAICodexAuthStatus } from './auth.js'
+export { createCodexCredentialStore, readCodexCredential, OPENAI_CODEX_PROVIDER } from './credentials.js'
+export { createOpenAICodexAccessResolver } from './token.js'
 export {
   createOpenAICodexUsageRpc,
   createOpenAICodexUsageService,
@@ -52,7 +52,6 @@ export {
   normalizeDeepSeekBalance,
   normalizeOpencodeGoUsage,
   normalizeOpenAICodexUsage,
-  OPENAI_CODEX_CATALOG_METHOD,
   OPENAI_CODEX_USAGE_CHANNEL,
   OPENAI_CODEX_USAGE_METHOD,
   OPENAI_CODEX_USAGE_URL,
@@ -60,92 +59,62 @@ export {
 } from './usage.js'
 
 /** Stable Cordis plugin name. */
-export const name = 'llm-openai-codex-lite'
-
-/** The LLM registry is the only required service; the authenticated usage RPC mounts opportunistically. */
-export const inject = ['llm']
+export const name = 'codex-quota'
 
 /**
- * Namespace of this plugin's user-editable section in `$DSH_HOME/settings.yaml`.
+ * No service is required, and saying so is not a formality.
+ *
+ * Every service this plugin touches is optional and read soft: `connection`
+ * and `settings` through `ctx.inject`, `credentials` through `ctx.get`. A name
+ * listed here would instead hold this fiber pending until that service
+ * arrived — a headless composition mounting no Connection would keep the
+ * plugin unloaded forever rather than mounting nothing. The empty list is also
+ * what lets `service-reads` tell a soft read from an undeclared one.
+ */
+export const inject = []
+
+/**
+ * Namespace of this plugin's section in `$DSH_HOME/settings.yaml`.
  *
  * It is the plugin name, which is also the composition entry id and the key
  * the browser card registers under — the Settings tab dispatches a card only
  * to the namespace it names, so both halves must spell this the same way.
  */
-export const settingsNs = 'llm-openai-codex-lite'
+export const settingsNs = 'codex-quota'
 
 /**
- * Per-model replacements for the installed pi-ai catalog's context window, by
- * model id.
+ * The section this plugin serves: nothing.
  *
- * The catalog carries the conservative numbers OpenAI tuned the Codex client
- * around, not the model's documented ceiling: `gpt-5.6-sol` ships as a 272000
- * window although OpenAI documents 1,050,000. Raising `contextWindow` is what
- * lets a session keep more history before whatever compaction backend the
- * session's agent preset mounts starts summarizing, and it is the same local
- * bookkeeping choice Codex exposes as `model_context_window`; the number never
- * reaches the server, which enforces its own limit and prices input above
- * 272000 at a higher tier.
+ * It is registered anyway, and the empty schema is the honest shape rather
+ * than a placeholder for a field to come. The plugins tab renders the
+ * INTERSECTION of two ledgers — the namespaces the Host serves and the cards
+ * registered into `settings.plugin.item` — so a card whose namespace nobody
+ * registers is never dispatched
+ * (`packages/client/ui-settings-plugins/src/client/tab-store.ts`). This
+ * plugin's card displays quota and edits nothing, so without this registration
+ * it would not appear at all.
  *
- * The window is the only field worth replacing on this route: the Codex
- * Responses request body carries no output-token cap, so an output size would
- * change neither what the seam publishes nor what reaches the server.
- *
- * The model list defaults to every id in the installed catalog, so an
- * unconfigured install advertises exactly what it did before.
- *
- * It narrows the ADVERTISED catalog, not just the picker. `listModels` is the
- * chokepoint every host-side enumeration goes through, and each one calls it
- * independently — `buildModelCatalog` in
- * `packages/api/session-controller/src/catalog.ts` for the browser catalog,
- * plus `packages/subagent/tool-subagent/src/list-models.ts` and
- * `packages/acp/acp/src/model-control.ts` — so a model unchecked here
- * disappears from all of them. Routing is untouched: a session
- * already on a hidden model keeps working, and an exact provider/model request
- * still resolves.
+ * Nothing reads a value out of it, which is why there is no `validate` hook:
+ * there is no field an edit could get wrong.
  */
-export const Config = z.object({
-  enabledModels: z.array(z.string().min(1)).min(1)
-    .default(openAICodexCatalogModelIds())
-    .description('Codex models this route advertises. It narrows the advertised catalog, not just the picker: the harness answers every catalog reader from the same list, so an unchecked model disappears from all of them. Exact persisted model selections remain routable.'),
-  modelOverrides: z.dict(z.object({
-    // The ceiling is `Number.MAX_SAFE_INTEGER` rather than a guess at how
-    // large a window could plausibly get: past it, integers stop being
-    // distinguishable and `String(value)` starts producing exponent notation,
-    // so a stored value would render into the card as something the card
-    // cannot parse back. Refusing it on the way in keeps every stored window
-    // editable.
-    contextWindow: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER)
-      .description('Context window in tokens. Local bookkeeping: it sizes the context meter and the compaction trigger, and never reaches the server.'),
-  }).description('Catalog field replacements for this model.'))
-    .default({})
-    .description('Per-model context windows for the openai-codex catalog, by model id.'),
-})
-
-/**
- * The "no overrides" answer, as one stable object.
- *
- * The adapter's profiles thunk memoizes on this object's identity, so a fresh
- * `{}` per call would rebuild the provider on every operation.
- */
-const NO_OVERRIDES = Object.freeze({})
+export const Config = z.object({})
 
 /**
  * Read one settings section defensively: an absent service, an unmounted
  * namespace, or a reader that throws all answer "nothing", never a throw that
- * could take the model route down with the quota read.
+ * could take the quota read down with it.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
  * @param {string} ns - the settings namespace.
  * @returns {unknown} the live section, when one is attached.
  */
 function readSection(ctx, ns) {
   try {
-    // `ctx.get(name)` and not `ctx.settings`: this plugin injects only `llm`,
-    // and the property accessor refuses a service the fiber never declared —
-    // it throws `cannot get property "settings" without inject` before the
-    // fallback beside it can run. The catch below then turns that into
-    // "nothing configured" for every route, silently, so every API-key route
-    // would read its endpoint and credential reference from the defaults
+    // `ctx.get(name)` and not `ctx.settings`: this plugin declares no
+    // injection, and the property accessor refuses a service the fiber never
+    // declared — it throws `cannot get property "settings" without inject`
+    // before the fallback beside it can run. The catch below then turns that
+    // into "nothing configured" for every route, silently, so every API-key
+    // route would read its endpoint and credential reference from the defaults
     // instead of from the section the operator actually wrote.
     var settings = ctx.get('settings')
     if (settings === undefined || settings === null) return undefined
@@ -217,57 +186,26 @@ function httpBase(value) {
 }
 
 /**
- * Register the `openai-codex` route on the harness LLM seam, then bind the
- * route's sizing to the settings section so it can be edited at runtime.
+ * Mount the quota RPC, and the namespace that lets its card be dispatched.
  *
- * The registration is an effect owned by this plugin's fiber, so unloading the
- * plugin releases the route. Registration happens first and reads the
- * composition entry: an entry naming a model the catalog does not carry is a
- * configuration error that must fail this load, exactly as it did before the
- * section existed.
- * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context carrying the LLM registry.
- * @param {{enabledModels?: string[], modelOverrides?: Record<string, {contextWindow?: number}>}} [config] - validated plugin config.
+ * Both are effects owned by this plugin's fiber, so unloading the plugin
+ * releases the channel and the section with it.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
  */
-export function apply(ctx, config) {
-  const catalogIds = openAICodexCatalogModelIds()
-  const supplied = config ?? {}
-  const entry = {
-    ...supplied,
-    modelOverrides: supplied.modelOverrides ?? NO_OVERRIDES,
-    enabledModels: supplied.enabledModels ?? catalogIds,
-  }
-  assertEnabledModelIds(entry.enabledModels, catalogIds)
-  // The authoritative source: the resolved settings section while one is
-  // attached, the composition entry before that and after a detach.
-  let current = () => entry
-  const store = new OpenAICodexCredentialStore()
-  // Model requests and quota reads share one pi-ai resolver. If either one
-  // rotates an expired OAuth token, concurrent work joins that same refresh
-  // instead of contending for the credential file's cross-process lock.
+export function apply(ctx) {
+  // The Codex reader and the native `llm-pi-ai` route resolve the same stored
+  // grant. Whichever refreshes first commits the rotation inside the credential
+  // record's write lock, and the other reads what it wrote.
+  const store = createCodexCredentialStore(ctx)
   const resolveAccessToken = createOpenAICodexAccessResolver(store)
-  ctx.llm.registerAdapter(
-    [OPENAI_CODEX_PROVIDER],
-    createOpenAICodexLiteAdapter(
-      store,
-      () => ctx.get('attachments'),
-      () => current().modelOverrides ?? NO_OVERRIDES,
-      resolveAccessToken,
-      () => selectableModelIds(current().enabledModels, catalogIds),
-      (attachments, ref) => resolveImageAttachmentAccess(
-        attachments,
-        hostPath => ctx.get('fs')?.processPathFromHostPath(hostPath),
-        ref,
-      ),
-    ),
-  )
   // The three quota sources, keyed by the model route the browser reports.
   // The endpoint of each API-key route is built from that route's own baseURL
   // plus a fixed suffix, so a key can only ever travel to the origin the model
   // route itself is configured against; unknown routes answer "none" and the
-  // browser renders nothing. Headless compositions keep the model route
-  // without acquiring a browser dependency; in Web, Connection owns request
-  // trust plus browser-session authentication, and channel registration follows
-  // this plugin's fiber on unload.
+  // browser renders nothing. Headless compositions keep the RPC without
+  // acquiring a browser dependency; in Web, Connection owns request trust plus
+  // browser-session authentication, and channel registration follows this
+  // plugin's fiber on unload.
   const piSection = () => readSection(ctx, 'llm-pi-ai')
   const nativeSection = () => readSection(ctx, 'llm-deepseek')
   const resolveRoute = async (provider) => {
@@ -312,52 +250,31 @@ export function apply(ctx, config) {
   }
   const usage = createProviderUsageService({
     resolveRoute,
-    codex: { resolveAccessToken, readCredential: () => store.readCurrent() },
+    codex: { resolveAccessToken, readCredential: () => readCodexCredential(ctx) },
   })
   ctx.inject(['connection'], (connectionCtx) => {
-    connectionCtx.connection.rpc.handle(
-      OPENAI_CODEX_USAGE_CHANNEL,
-      createProviderUsageRpc(usage, catalogIds),
-    )
+    connectionCtx.connection.rpc.handle(OPENAI_CODEX_USAGE_CHANNEL, createProviderUsageRpc(usage))
   })
-  // The catalog ships with the package, so the known ids are fixed for this
-  // install and the write-time check costs nothing per validation.
-  //
-  // `installSection` is a method on the settings service, so the optional-service
-  // wiring is the caller's: the body runs only while a provider is attached. The
-  // owner argument is `ctx`, not `settingsCtx` — the seam uses it to tell this
-  // plugin unloading (skip the fallback) from the provider merely detaching.
+  // `installSection` is a method on the settings service, so the
+  // optional-service wiring is the caller's: the body runs only while a
+  // provider is attached. The owner argument is `ctx`, not `settingsCtx` — the
+  // seam uses it to tell this plugin unloading from the provider merely
+  // detaching.
   ctx.inject(['settings'], (settingsCtx) => {
     try {
-      settingsCtx.settings.installSection(ctx, settingsNs, Config, entry, {
-        // Refuse the write rather than store a section that would size nothing:
-        // the seam runs this before it persists, so a bad edit leaves both the
-        // document and the serving route untouched, and the message it relays
-        // is the one the loader would have thrown.
-        validate: (value) => {
-          // Shape only for the allowlist: this hook also runs when the seam
-          // RESOLVES the namespace, so a catalog-membership check here turns the
-          // first boot after a pi-ai model rename into a refused section — and
-          // the refusal takes every `modelOverrides` window down with it. A
-          // retired id is dropped on read instead. `modelOverrides` stays strict:
-          // it names models the operator deliberately sized, so an id the
-          // catalog does not carry there is a configuration error, not drift.
-          assertEnabledModelShape(value?.enabledModels)
-          assertKnownModelIds(value?.modelOverrides ?? {}, catalogIds)
-        },
-        setSource: (source) => { current = source },
-        // Nothing derived from the section needs re-judging: the route set, its
-        // display name and its retry policy do not depend on configuration, and
-        // the adapter re-reads the thunk per operation.
-        onChange: () => {
-          ctx.logger.debug('dsh-codex-lite: model settings changed; the next request resolves the new model list and context window')
-        },
+      settingsCtx.settings.installSection(ctx, settingsNs, Config, {}, {
+        // Nothing is served from the section, so neither hook has work to do.
+        // They are required by the seam, and writing them as no-ops states
+        // that plainly.
+        setSource: () => {},
+        onChange: () => {},
       })
     } catch (error) {
-      // A settings section is an enhancement, not a prerequisite. Losing it
-      // leaves the route serving the composition entry, which is worth saying
-      // out loud rather than failing a fiber that is otherwise healthy.
-      ctx.logger.error('dsh-codex-lite: settings section unavailable; the route keeps serving its composition entry')
+      // The section is what makes the card dispatchable, not what makes the
+      // quota readable. Losing it costs the Settings card while the chip and
+      // the RPC keep working, which is worth saying out loud rather than
+      // failing a fiber that is otherwise healthy.
+      ctx.logger.error('dsh-codex-lite: settings namespace unavailable; the Settings card cannot be dispatched')
       ctx.logger.error(error)
     }
   })

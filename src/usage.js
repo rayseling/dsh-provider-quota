@@ -36,9 +36,6 @@ export const DEEPSEEK_PUBLIC_BASE_URL = 'https://api.deepseek.com'
 /** Harness Connection RPC channel and method consumed by the browser card. */
 export const OPENAI_CODEX_USAGE_CHANNEL = '/dsh-codex-lite'
 export const OPENAI_CODEX_USAGE_METHOD = 'usage'
-/** Read-only method returning the unfiltered installed Codex catalog to Settings. */
-export const OPENAI_CODEX_CATALOG_METHOD = 'catalog'
-
 const FIVE_HOUR_SECONDS = 5 * 60 * 60
 const WEEK_SECONDS = 7 * 24 * 60 * 60
 const WINDOW_TOLERANCE = 0.05
@@ -768,16 +765,6 @@ export function createProviderUsageService(options) {
 }
 
 /**
- * The catalog request carries nothing at all, so anything in it is a caller
- * this endpoint does not know how to answer.
- * @param {unknown} payload - decoded RPC payload.
- * @returns {boolean} whether the catalog request is exactly empty.
- */
-function isCatalogRequest(payload) {
-  return isRecord(payload) && Object.keys(payload).length === 0
-}
-
-/**
  * The strict usage request payload: an optional provider and an optional force
  * flag, and nothing else.
  *
@@ -815,20 +802,10 @@ function legacyCodexValue(value) {
  * Build the provider-aware Handler for Harness Connection RPC. Connection owns
  * the Host/Origin/fetch-site trust fence before this function can run.
  * @param {{get(provider?: string, force?: boolean, signal?: AbortSignal): Promise<object>}} service
- * @param {readonly string[]} [catalogIds] - complete installed catalog for the Settings card.
  * @returns {(endpoint: string, payload: unknown, signal: AbortSignal) => Promise<object>}
  */
-export function createProviderUsageRpc(service, catalogIds = []) {
+export function createProviderUsageRpc(service) {
   return async (endpoint, payload, signal) => {
-    if (endpoint === OPENAI_CODEX_CATALOG_METHOD) {
-      if (!isCatalogRequest(payload)) {
-        return { ok: false, error: { code: 'invalid-request', message: 'Invalid catalog request' } }
-      }
-      if (signal.aborted) {
-        return { ok: false, error: { code: 'aborted', message: 'catalog request was cancelled' } }
-      }
-      return { ok: true, value: { models: [...catalogIds] } }
-    }
     if (endpoint !== OPENAI_CODEX_USAGE_METHOD) {
       return { ok: false, error: { code: 'method-not-found', message: 'Unknown usage method' } }
     }

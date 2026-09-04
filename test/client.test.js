@@ -22,7 +22,7 @@ import { readFile } from 'node:fs/promises'
 import { describe, test } from 'node:test'
 
 /** The namespace both halves must spell identically; see the note above. */
-const settingsNs = 'llm-openai-codex-lite'
+const settingsNs = 'codex-quota'
 
 const source = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
 

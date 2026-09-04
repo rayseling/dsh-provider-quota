@@ -1,7 +1,7 @@
 {
   "name": "dsh-codex-lite",
-  "version": "0.4.0",
-  "description": "ChatGPT-subscription Codex route for DeepSeek Harness: official pi-ai OAuth/adapter, owner-only credentials, terminal login, selectable model listings, provider-aware quota display (Codex 5h/7d, OpenCode Go 5h/7d/1m, DeepSeek balance), and per-model context settings. No tools or default changes.",
+  "version": "0.5.0",
+  "description": "Account-quota surface for a DeepSeek Harness composition: one authenticated Connection RPC plus a Settings card and session-header chip showing Codex 5h/7d, OpenCode Go 5h/7d/1m, or the DeepSeek balance. Registers no model route — llm-pi-ai serves openai-codex natively.",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -10,9 +10,6 @@
     "./usage": "./src/usage.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
-  },
-  "bin": {
-    "dsh-codex-lite": "src/bin.js"
   },
   "scripts": {
     "test": "node scripts/check.mjs",
@@ -34,12 +31,10 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-atomic-write": "*",
     "@deepseek-ai/dsh-credentials": "*",
-    "@deepseek-ai/dsh-home-paths": "*",
     "@deepseek-ai/dsh-launch-environment": "*",
     "@deepseek-ai/dsh-llm": "*",
-    "@deepseek-ai/dsh-llm-pi-ai": "*",
+    "@deepseek-ai/dsh-llm-pi-ai": ">=0.1.2-alpha.1",
     "@deepseek-ai/dsh-settings": ">=0.1.2-alpha.2",
     "@deepseek-ai/schemastery": "*",
     "@earendil-works/pi-ai": "^0.84.2"

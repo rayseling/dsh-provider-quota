@@ -1,5 +1,7 @@
 # 0003 · 手搓 pi-ai profile 时，图片预算字段少一个，每张图都会被换成文本
 
+> **0.5.0 起本仓库不再有这段代码**：模型路由交回宿主的 `llm-pi-ai`，本文留档，再写同类代码时先读它。下面的符号名是当时的，本仓库已查不到。
+
 **症状**：发图给 Codex 模型，模型回「我这边没收到图片内容」或「这张被系统省略了」。
 请求正常返回，HTTP 200，不报错。0.4.0 之前一直是这样。
 
@@ -37,7 +39,7 @@ profile 里 `maxRequestImageBytes` / `requestImagePixelBudget` / `requestImageMa
 
 两层，缺一不可：
 
-1. **行为断言**（真正的那个）：`test/adapter.test.js` 拿真实 profile 跑 harness 自己的
+1. **行为断言**（真正的那个）：test/adapter.test.js（已删） 拿真实 profile 跑 harness 自己的
    offload 函数，断言图片过去之后**还是** image。删掉任一字段，它给出
    `actual: ['text','text'], expected: ['text','image']`。
    **别把它改回「断言这两个数字存在」。**

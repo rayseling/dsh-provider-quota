@@ -1,5 +1,7 @@
 # 0001 · settings 的 `validate` 在每次「读取」时也跑
 
+> **0.5.0 起本仓库不再有这段代码**：模型路由交回宿主的 `llm-pi-ai`，本文留档，再写同类代码时先读它。下面的符号名是当时的，本仓库已查不到。
+
 **症状**：某次 `dsh plugin update` 之后，用户在卡片里设的上下文长度悄悄变回默认值。
 界面没有任何提示，只有两行日志。
 
@@ -30,8 +32,8 @@
 `validate` 里**不要放依赖外部世界的检查**。模型目录会因为 pi-ai 升级而改名/下架，环境变量会变，
 文件会消失——这些都不是用户的错，却会让整份设置在下次启动时蒸发。
 
-- 依赖外部状态的（例：`enabledModels` 是否还在目录里）→ **读取时过滤**，见 `selectableModelIds()`
-- 只依赖自身形状的（非空、不重复）→ 可以放 `validate`，见 `assertEnabledModelShape()`
+- 依赖外部状态的（例：`enabledModels` 是否还在目录里）→ **读取时过滤**，见 selectableModelIds()
+- 只依赖自身形状的（非空、不重复）→ 可以放 `validate`，见 assertEnabledModelShape()
 - 组合配置（`cordis.patch.yml`）里的值可以严格校验并大声报错：它随插件版本钉死，写错是部署方的 bug
 
 ## 守住它的门

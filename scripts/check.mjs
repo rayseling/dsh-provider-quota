@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsh-codex-lite gates: eleven independent collectors plus a runner.
+ * dsh-codex-lite gates: nine independent collectors plus a runner.
  *
  * `npm test` runs this, not `node --test` — see AGENTS.md. The suite alone
  * cannot be the gate, because a checkout without the peer dependencies
@@ -1167,7 +1167,7 @@ export function collectIdentityViolations(root) {
   if (!runsGates) {
     violations.push(
       `package.json: \`scripts.test\` is ${JSON.stringify(testScript)}, which does not run \`${TEST_COMMAND}\`. `
-      + '`npm test` is the only command AGENTS.md tells anyone to run, so a value that does not reach this file silently removes all eight gates — '
+      + '`npm test` is the only command AGENTS.md tells anyone to run, so a value that does not reach this file silently removes every gate in it — '
       + 'and the bare test runner it usually gets pointed at reports success even when whole suites were skipped. '
       + 'Add the command back (chaining more after it is fine), or update TEST_COMMAND in scripts/check.mjs.',
     )
@@ -1287,198 +1287,6 @@ export function collectDeclaredDepViolations(root) {
     }
   }
   return [...new Set(violations)]
-}
-
-// ---------------------------------------------------------------------------
-// gate: image-budget
-// ---------------------------------------------------------------------------
-
-/** The call whose argument is the hand-rolled profile. */
-const PROFILE_BUILDER = 'createProfilesThunk'
-
-/** The three fields a hand-rolled pi-ai profile has to carry together. */
-const IMAGE_BUDGET_FIELDS = ['maxRequestImageBytes', 'requestImagePixelBudget', 'requestImageMaxBytes']
-
-/**
- * The hand-rolled pi-ai profile must set all three image budget fields, close
- * together, to real values.
- *
- * AGENTS.md trap 3. Omitting one does NOT fall back to a host default: the
- * adapter always builds `{ maxPixels, maxBytes }` out of the profile, so a
- * missing field travels down as `undefined`, `Math.min(bytes, undefined)` is
- * `NaN`, every budget comparison fails, and every image in the request is
- * replaced by a text placeholder. Nothing throws.
- *
- * The VALUES are checked, not just the keys. Writing
- * `requestImageMaxBytes: undefined` is the exact state the trap describes, and
- * a key-only check waves it through — it did.
- *
- * This is a BACKSTOP. The real assertion is in `test/adapter.test.js`, which
- * runs the harness's own offload function over a real profile and asserts the
- * image is still an image afterwards. That is strictly stronger. But it needs
- * the peer dependencies and is skipped in a bare checkout, which is where this
- * text-level check earns its keep. Do NOT let this one replace it.
- * @param {string} root - checkout to scan.
- * @returns {string[]} one message per violation.
- */
-export function collectImageBudgetViolations(root) {
-  const adapter = readText(root, 'src/adapter.js')
-  if (adapter === undefined) {
-    return ['src/adapter.js: absent, so the profile this gate reads does not exist. A gate whose subject is missing must fail rather than pass vacuously.']
-  }
-  const source = stripComments(adapter)
-
-  // Anchor on the call that builds the profile, and balance its parentheses,
-  // rather than searching the file for each field name. Searching the file
-  // finds the FIRST occurrence of each, so a reference object anywhere above —
-  // `const IMAGE_BUDGET_REFERENCE = { …all three… }` — satisfies the gate
-  // while the real profile is missing a field. That decoy got past the first
-  // version of this check.
-  const calls = []
-  for (const hit of source.matchAll(new RegExp(`(function\\s+)?\\b${PROFILE_BUILDER}\\s*\\(`, 'gu'))) {
-    // The declaration is not a call; only its invocations carry a profile.
-    if (hit[1] !== undefined) continue
-    let depth = 0
-    let end = hit.index
-    for (let i = source.indexOf('(', hit.index); i < source.length; i++) {
-      if (source[i] === '(') depth++
-      else if (source[i] === ')') {
-        depth--
-        if (depth === 0) { end = i; break }
-      }
-    }
-    calls.push({ line: lineLookup(source)(hit.index), text: source.slice(hit.index, end + 1) })
-  }
-  if (calls.length === 0) {
-    return [
-      `src/adapter.js: no call to \`${PROFILE_BUILDER}\` found, so the profile this gate reads does not exist. `
-      + 'A gate that cannot locate its anchor must fail rather than pass quietly. '
-      + 'Restore the call, or update PROFILE_BUILDER in scripts/check.mjs.',
-    ]
-  }
-
-  /**
-   * Follow one level of `const NAME = value`, so that a budget moved into a
-   * named constant is still judged by its value.
-   * @param {string} value - the text after the colon.
-   * @returns {string} the value, or what the constant it names is bound to.
-   */
-  const resolved = (value) => {
-    if (!/^[A-Za-z_$][\w$]*$/u.test(value)) return value
-    const binding = new RegExp(`\\b(?:const|let|var)\\s+${value}\\s*=\\s*([^\\n;]*)`, 'u').exec(source)
-    return binding === null ? value : binding[1].trim()
-  }
-
-  const violations = []
-  // Every call site is judged on its own. Joining them let a second, unrelated
-  // profile supply the fields a first one was missing.
-  for (const call of calls) {
-    const assignments = IMAGE_BUDGET_FIELDS.map((field) => {
-      const hit = new RegExp(`\\b${field}\\s*:\\s*([^,\\n}]*)`, 'u').exec(call.text)
-      return { field, value: hit === null ? undefined : hit[1].trim() }
-    })
-    const missing = assignments.filter(entry => entry.value === undefined)
-    if (missing.length > 0) {
-      violations.push(
-        `src/adapter.js:${call.line}: the profile passed to \`${PROFILE_BUILDER}\` does not set ${missing.map(entry => `\`${entry.field}\``).join(' and ')}. `
-        + 'An omitted budget field is not a host default — it travels down as `undefined`, `Math.min(bytes, undefined)` is `NaN`, '
-        + 'and every image in the request is silently replaced by a text placeholder. '
-        + 'Set all three together; the defaults are in `packages/llm/llm-pi-ai/src/config.ts` (2048² pixels, 1 MiB).',
-      )
-      continue
-    }
-    const empty = assignments.filter((entry) => {
-      const value = resolved(entry.value)
-      return value === 'undefined' || value === 'null' || value.length === 0
-    })
-    if (empty.length > 0) {
-      violations.push(
-        `src/adapter.js:${call.line}: \`${empty.map(entry => entry.field).join('` and `')}\` resolves to \`${resolved(empty[0].value) || 'nothing'}\`. `
-        + 'That is the trap itself rather than a way around it: the field still reaches `Math.min(bytes, undefined)`, the comparison still yields `NaN`, '
-        + 'and every image is still replaced by a text placeholder, with no error anywhere. '
-        + 'Give it a real budget.',
-      )
-    }
-  }
-  return violations
-  return []
-}
-
-// ---------------------------------------------------------------------------
-// gate: catalog-wording
-// ---------------------------------------------------------------------------
-
-/**
- * The user-facing description of the model allowlist must say that it narrows
- * the advertised catalog, not just the picker.
- *
- * AGENTS.md trap 4: `listModels` is the chokepoint EVERY host-side catalog
- * enumeration goes through, each calling it independently — the browser
- * catalog through `buildModelCatalog` in the Session Controller, and the
- * subagent and ACP model lists directly — so a model unchecked here
- * disappears from all of them. An edit that softened the
- * description back to "the model picker" would be a documentation regression
- * with a support cost.
- *
- * An earlier version of this gate required the token `/v1/models`. That
- * endpoint does not exist: the harness registers no such route, and every
- * occurrence of the string in that tree is the harness acting as a CLIENT
- * against an upstream provider. It had been inherited from AGENTS.md and
- * copied into the user-visible description, and pinning it here would have
- * held a fabrication in place — the same failure as `SettingsRuntime`, one
- * step worse for reaching the interface. The required tokens are now ones
- * that are true: `catalog` in the description, and `listModels` in the README.
- * (`doc-symbols` does NOT independently confirm `listModels` — a bare
- * lowercase identifier matches neither shape it judges. This gate pins the
- * string; nothing pins the symbol behind it.)
- *
- * The schema half reads the description STRING, not the file and not the
- * surrounding chain. Checking the file passes on the token appearing in a
- * nearby comment; checking the chain passes on a sibling `.role('…')` carrying
- * it. Both were observed while red-testing this gate.
- * @param {string} root - checkout to scan.
- * @returns {string[]} one message per violation.
- */
-export function collectCatalogWordingViolations(root) {
-  const violations = []
-
-  const index = readText(root, 'src/index.js')
-  if (index === undefined) {
-    violations.push('src/index.js: absent, so the description this gate reads does not exist. Run from a checkout root.')
-  } else {
-    const region = /enabledModels:\s*([\s\S]*?)(?:\n {2}\w|\n\}\))/u.exec(stripComments(index))
-    const description = region === null
-      ? null
-      : /\.description\(\s*(['"])([\s\S]*?)\1\s*\)/u.exec(region[1])
-    if (description === null) {
-      violations.push(
-        `src/index.js: no ${region === null ? '`enabledModels:` schema field' : '`.description(...)` on `enabledModels`'} found, so the text this gate reads does not exist. `
-        + 'A gate that cannot locate its anchor must fail rather than pass quietly. '
-        + 'Restore it, or update the pattern in scripts/check.mjs.',
-      )
-    } else if (!description[2].includes('catalog')) {
-      violations.push(
-        'src/index.js: the `enabledModels` schema `.description()` no longer says `catalog`. '
-        + 'The Settings card renders that string verbatim, and it is the only place a user learns that this allowlist narrows the advertised catalog '
-        + 'rather than just the model picker — unchecking a model removes it from every list the harness answers, and finding that out afterwards is a '
-        + 'support call. Say it in the description itself; a comment nearby, or a sibling call in the same chain, does not reach the user.',
-      )
-    }
-  }
-
-  const readme = readText(root, 'README.md')
-  if (readme === undefined) {
-    violations.push(
-      'README.md: absent, so half of what this gate claims to check does not exist. '
-      + 'A summary line naming a file that is not there is the exact failure the other seven collectors are written against.',
-    )
-  } else if (!readme.includes('listModels')) {
-    violations.push(
-      'README.md: does not mention `listModels` anywhere. It is where a reader learns what the allowlist does, and the reason it reaches every '
-      + 'model list is that the harness answers all of them from that one call. Name the mechanism, so the claim stays checkable.',
-    )
-  }
-  return violations
 }
 
 // ---------------------------------------------------------------------------
@@ -1894,16 +1702,6 @@ function gates(root, { bare = false } = {}) {
       id: 'deps',
       run: () => collectDeclaredDepViolations(root),
       summary: () => 'deps: every bare specifier in src/**, test/ and scripts/ is declared. Proves the manifest is honest, NOT that a fresh clone can `npm install` — it cannot; an unpublished transitive peer 404s.',
-    },
-    {
-      id: 'image-budget',
-      run: () => collectImageBudgetViolations(root),
-      summary: () => `image-budget: ${IMAGE_BUDGET_FIELDS.length} fields set to real values inside the ${PROFILE_BUILDER} call itself. A bare-checkout backstop only — the real assertion is behavioural, in test/adapter.test.js, and this proves nothing about what the harness does with the numbers.`,
-    },
-    {
-      id: 'catalog-wording',
-      run: () => collectCatalogWordingViolations(root),
-      summary: () => 'catalog-wording: the enabledModels description still says `catalog`, and the README still names `listModels`. Proves the token is in the text a user reads — not that the sentence around it is clear.',
     },
     {
       id: 'verify-workflow',

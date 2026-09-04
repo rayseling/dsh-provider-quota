@@ -43,7 +43,7 @@
     var ChevronIcon = primitives.IconChevronDownOutline14
 
     /** The settings namespace this card edits; must equal the host half's. */
-    var SETTINGS_NS = 'llm-openai-codex-lite'
+    var SETTINGS_NS = 'codex-quota'
 
     /** The LLM route this plugin owns, as the model catalog groups it. */
     var OPENAI_CODEX_ROUTE = 'openai-codex'

@@ -1,11 +1,13 @@
 # 0007 · 顺序装反时，勾选框保存成功、无人读取、界面报成功
 
+> **0.5.0 起本仓库不再有这段代码**：模型路由交回宿主的 `llm-pi-ai`，本文留档，再写同类代码时先读它。下面的符号名是当时的，本仓库已查不到。
+
 **症状**：假想的——但它差一点就真的发生了。在把这批改动切成 commit 的时候，
 如果卡片那个 commit 落在 host 半边之前，用户勾掉几个模型、点保存、卡片显示成功，
 `settings.yaml` 里确实写进去了，**而模型列表一个都没少**。全程没有异常、没有红字。
 
-**原因**：`enabledModels` 这件事有两半。卡片（`src/client.js`）负责写，
-适配器（`src/adapter.js` 的 `selectableModelIds`）负责在 `listModels` 里读。
+**原因**：`enabledModels` 这件事有两半。卡片（src/client.js）负责写，
+适配器（当时的 src/adapter.js，selectableModelIds）负责在 `listModels` 里读。
 只落地写的那一半，写入链路是完整的——settings seam 不认识这个 key 也照存不误，
 因为它存的是这个 namespace 下的一整个对象。没有任何一环会说「你写的这个东西没人看」。
 

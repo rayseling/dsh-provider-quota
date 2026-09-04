@@ -3,39 +3,41 @@
 > 给**任何**改动本仓库的人和 agent 看（`AGENTS.md` 是跨工具约定的文件名）。
 > `CLAUDE.md` 是指向这里的软链，别在那边另写一份。
 
-## 九条已经咬过人的坑
+## 七条已经咬过人的坑
 
 共同点：出错时没有异常、没有红字，只有一个看起来正常、其实内容已经被悄悄改掉的结果。
 每条都有完整复盘（症状 / 原因 / **为什么每层防线都没拦住**），点进去看。
 
 | # | 规则 | 守它的 |
 |---|---|---|
-| [1](notes/postmortems/0001-settings-validate-runs-on-read.md) | `validate` 每次**读取**时也跑。里面**别查外部世界**（目录、环境变量、文件）——抛一次，整份 section 连同不相干的字段一起没 | `test/settings.test.js` 的 STARTUP 那条 |
+| [1](notes/postmortems/0001-settings-validate-runs-on-read.md) | `validate` 每次**读取**时也跑。里面**别查外部世界**（目录、环境变量、文件）——抛一次，整份 section 连同不相干的字段一起没 | 无：0.5.0 起本插件的 section 没有字段，也没有 `validate`。再加钩子时补一条 |
 | [2](notes/postmortems/0002-property-accessor-without-inject.md) | 软读**没 inject 的服务**只能用 `ctx.get(name)`。`ctx.settings` 抛在同表达式的兜底**之前**，外层 `catch` 把它变成「没配置」 | `service-reads` 门 |
-| [3](notes/postmortems/0003-image-budget-fields-must-travel-together.md) | pi-ai profile 的三个图片预算字段**一起给真值**。少一个 → `NaN` → 每张图变成文本占位符 | `test/adapter.test.js` + `image-budget` |
-| [4](notes/postmortems/0004-listmodels-narrows-every-catalog-reader.md) | 收窄 `listModels` 影响**所有宿主侧目录查询**，别写成「只影响选择器」，也别把编出来的 `/v1/models` 写回来 | `catalog-wording` 门 |
 | [5](notes/postmortems/0005-base-url-version-segment.md) | `OPENCODE_GO_BASE_URL` 是 **base**，后缀由 fetch 补，两边要在「`/v1` 归谁」上一致（目录本身不齐） | `test/usage.test.js` composition 那组 |
 | [6](notes/postmortems/0006-fabricated-class-name-in-the-instructions.md) | 文档里带反引号的符号名是一句「这是真的」的断言。不确定就别加反引号 | `doc-symbols` 门 |
 | [7](notes/postmortems/0007-the-picker-that-saved-into-nothing.md) | 设置 key 的**写方和读方分处两模块**时 seam 不查两半是否都在。少一半：写入成功、落盘、无人读、界面报成功 | 无，只能靠人问 |
 | [8](notes/postmortems/0008-a-docstring-ate-the-export.md) | 漏一个 `*/`，注释会吞到**下一个** `*/`，中间的 `export` 被吃掉而语法合法 | `scanProblems`（在 `service-reads` / `deps` 里跑） |
 | [9](notes/postmortems/0009-a-renamed-failure-code-stopped-matching.md) | 宿主的失败码归 `<域>/<码>` 管，且会改名。比较两边都是字符串：改名后不抛错，只是不再匹配，落到旁边的兜底 | `remote-codes` 门 |
 
+坑 3（图片预算三字段）和坑 4（`listModels` 收窄）的主体在 0.5.0 随模型路由一起移出本仓库，
+复盘留档：[0003](notes/postmortems/0003-image-budget-fields-must-travel-together.md)、[0004](notes/postmortems/0004-listmodels-narrows-every-catalog-reader.md)。
+再写 pi-ai profile 或收窄目录的代码之前先读它们。
+
 设计理由（为什么这么做、当时否决了什么）在 [`notes/implemented/`](notes/implemented/README.md)。
 
 ## 门禁：`npm test`
 
 ```sh
-npm test            # 十一道门 + 整套测试；这是唯一算数的那个命令
+npm test            # 九道门 + 整套测试；这是唯一算数的那个命令
 npm run test:raw    # 只跑 node --test，给紧编辑循环用——它不是证据
 node scripts/check.mjs --only=<门名>    # 单跑一道
 node scripts/check.mjs --exemptions     # 列出每一条豁免
 ```
 
-十一个纯 collector 加一个 `for` 循环，没有调度器（门名跑 `--help` 就有）。
+九个纯 collector 加一个 `for` 循环，没有调度器（门名跑 `--help` 就有）。
 **每道门的机制、作用域、以及它证明不了什么，写在对应 collector 的头注释里**——这里不重抄。
 
 `identity` 里最要命的一条：**`scripts.test` 必须还在跑 `node scripts/check.mjs`**。
-改掉它十一道门当场全消失，而 `npm test` 照印绿色。兜底的是 `test/check.test.js` 那条自检
+改掉它九道门当场全消失，而 `npm test` 照印绿色。兜底的是 `test/check.test.js` 那条自检
 （断言本仓库 `identity` 干净），所以绕过会让**它重定向过去的那个 runner** 变红。
 
 **CI 跑 `--bare`：除 `doc-refs` / `doc-symbols` / `remote-codes` 外全部**（够不到 harness 就报红，留本地）。
@@ -44,11 +46,11 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 
 ### skip 不是通过，todo 也不是
 
-`node --test` 单独跑**会撒谎**。裸检出里它报 `# tests 204 / skipped 0`、退出码 0，
-而完整检出是 303 条（权威数字在 `scripts/expected.json`）。`describe(name, { skip }, fn)` 不展开子树，整个 suite 记成一行
-`ok N - … # SKIP`，里面的测试**既不进 `# tests` 也不进 `# skipped`**。
+`node --test` 单独跑**会撒谎**。裸检出里它照样 `# skipped 0`、退出码 0，只是少数了一批：
+`describe(name, { skip }, fn)` 不展开子树，整个 suite 记成一行 `ok N - … # SKIP`，
+里面的测试**既不进 `# tests` 也不进 `# skipped`**。完整检出是 237 条（权威数字在 `scripts/expected.json`）。
 
-- 那四份 skip 守卫（`adapter`/`bin`/`settings`/`store`）是给别人在裸检出里读代码用的，
+- 那两份 skip 守卫（`settings`/`credentials`）是给别人在裸检出里读代码用的，
   不是给本仓库改动留的口子。**提交前必须零 skip。**
 - `{ todo: '...' }` 同样禁止：它照常跑、照常抛，而摘要报 `# fail 0`。门同时看
   `# todo`、`# cancelled` 和任何一行 `not ok`。
@@ -63,7 +65,7 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 |---|---|
 | `src/` 任何行为 | `npm test` |
 | `src/client.js` | `npm test` + **真开一次 `dsh web` 看**；commit message 里写明「手动验证：dsh web，截图 `.shots/<名>.png`」 |
-| `src/index.js` 的 settings 形状 | `npm test`，重点看 `test/settings.test.js`（启的是真 seam，不是桩） |
+| `src/index.js` / `src/credentials.js` | `npm test`，重点看 `test/settings.test.js` 和 `test/credentials.test.js`（启的是真 seam，不是桩） |
 | 文档 | `npm test`；引 `packages/…` 要设 `DSH_HARNESS_ROOT`，否则文档门**报红**（查不了就说查不了） |
 | `scripts/check.mjs` | `npm test`，并且**把 bug 塞回去看它变红**再还原 |
 | `package.json` / `cordis.patch.yml` | `npm test` |
@@ -75,7 +77,7 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 - **`src/client.js` 占 `src/` 将近一半，行为测试只到额度面板为止。** 只有 `windowsPanelElement`
   有一条真渲染的用例；其余组件被**捕获**却从不调用（`react` 是 `{}`），换成 `throw` 照样全绿。
   唯一验证手段是人去看真实的 `dsh web`。
-- **`login` 的 OAuth 零执行**；Windows 权限位按平台 skip；`cordis.patch.yml` 只比字符串。
+- **凭据记录的跨进程互斥没测过**：`modifyRecord` 的锁只在一个进程里跑过；`cordis.patch.yml` 只比字符串。
 - **`npm install` 装不起来**（未发布的传递 peer 会 404）。`deps` 管的是清单**诚实**，不是可安装性。
 - **CI 绿不代表文档引用和失败码解析得到**（那三道留在本地），也不代表 peer 测试跑过（在 CI 里它们从不执行）。
 - **裸模式的 skip 判据是按 reason 文本匹配的**：一条 flaky 测试只要把理由写成

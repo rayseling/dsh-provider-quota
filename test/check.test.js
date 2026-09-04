@@ -30,14 +30,12 @@ import {
   REPO_ROOT,
   allGateIds,
   bareGateIds,
-  collectCatalogWordingViolations,
   collectDeclaredDepViolations,
   collectDocBudgetViolations,
   collectDocRefViolations,
   collectDocSymbolViolations,
   collectRemoteCodeViolations,
   collectIdentityViolations,
-  collectImageBudgetViolations,
   collectServiceReadViolations,
   collectSuiteViolations,
   collectWorkflowViolations,
@@ -135,7 +133,7 @@ describe('source scanning', () => {
 describe('this checkout, checked by the runner it would be redirected away from', () => {
   test('the gates are still wired to `npm test`, and identity is clean here', () => {
     // The one bypass no gate can see from inside: rewriting `scripts.test` to
-    // `node --test` removes all eight gates, and `npm test` then prints a full
+    // `node --test` removes every gate, and `npm test` then prints a full
     // green suite. This assertion lives in the SUITE, so the bypass trips the
     // runner it redirects to. It is the reason `collectIdentityViolations`
     // takes a root.
@@ -580,7 +578,7 @@ describe('gate: identity', () => {
     })
     assert.deepEqual(collectIdentityViolations(root), [
       'package.json: `scripts.test` is "node --test", which does not run `node scripts/check.mjs`. '
-      + '`npm test` is the only command AGENTS.md tells anyone to run, so a value that does not reach this file silently removes all eight gates — '
+      + '`npm test` is the only command AGENTS.md tells anyone to run, so a value that does not reach this file silently removes every gate in it — '
       + 'and the bare test runner it usually gets pointed at reports success even when whole suites were skipped. '
       + 'Add the command back (chaining more after it is fine), or update TEST_COMMAND in scripts/check.mjs.',
     ])
@@ -718,133 +716,6 @@ describe('gate: deps', () => {
       'src/client.js': "function factory(require) {\n  var React = require('react')\n}\n",
     })
     assert.deepEqual(collectDeclaredDepViolations(root), [])
-  })
-})
-
-// ---------------------------------------------------------------------------
-
-describe('gate: image-budget', () => {
-  const profile = [
-    'const profiles = createProfilesThunk(currentOverrides, requestProvider(provider), {',
-    '  provider: OPENAI_CODEX_PROVIDER,',
-    '  maxRequestImageBytes: MAX_REQUEST_IMAGE_BYTES,',
-    '  requestImagePixelBudget: REQUEST_IMAGE_PIXEL_BUDGET,',
-    '  requestImageMaxBytes: REQUEST_IMAGE_MAX_BYTES,',
-    '})',
-    '',
-  ].join('\n')
-
-  test('accepts a profile that sets all three together', async () => {
-    assert.deepEqual(collectImageBudgetViolations(await fixture({ 'src/adapter.js': profile })), [])
-  })
-
-  test('rejects the profile with one field deleted — the exact shape of trap 3', async () => {
-    const root = await fixture({
-      'src/adapter.js': profile.replace('  requestImageMaxBytes: REQUEST_IMAGE_MAX_BYTES,\n', ''),
-    })
-    assert.deepEqual(collectImageBudgetViolations(root), [
-      'src/adapter.js:1: the profile passed to `createProfilesThunk` does not set `requestImageMaxBytes`. '
-      + 'An omitted budget field is not a host default — it travels down as `undefined`, `Math.min(bytes, undefined)` is `NaN`, '
-      + 'and every image in the request is silently replaced by a text placeholder. '
-      + 'Set all three together; the defaults are in `packages/llm/llm-pi-ai/src/config.ts` (2048² pixels, 1 MiB).',
-    ])
-  })
-
-  test('rejects a field explicitly set to undefined, which is the trap itself', async () => {
-    const root = await fixture({
-      'src/adapter.js': profile.replace('REQUEST_IMAGE_MAX_BYTES,', 'undefined,'),
-    })
-    assert.deepEqual(collectImageBudgetViolations(root), [
-      'src/adapter.js:1: `requestImageMaxBytes` resolves to `undefined`. '
-      + 'That is the trap itself rather than a way around it: the field still reaches `Math.min(bytes, undefined)`, the comparison still yields `NaN`, '
-      + 'and every image is still replaced by a text placeholder, with no error anywhere. '
-      + 'Give it a real budget.',
-    ])
-  })
-
-  test('is not fooled by a decoy object elsewhere in the file', async () => {
-    const root = await fixture({
-      'src/adapter.js': 'const IMAGE_BUDGET_REFERENCE = {\n  maxRequestImageBytes: 1,\n  requestImagePixelBudget: 2,\n  requestImageMaxBytes: 3,\n}\n'
-        + '\n'.repeat(40) + profile.replace('  requestImageMaxBytes: REQUEST_IMAGE_MAX_BYTES,\n', ''),
-    })
-    assert.equal(collectImageBudgetViolations(root).length, 1, 'the decoy must not satisfy the gate')
-  })
-
-  test('fails rather than passing vacuously when the file is gone', async () => {
-    const root = await fixture({ 'package.json': MANIFEST })
-    assert.deepEqual(collectImageBudgetViolations(root), [
-      'src/adapter.js: absent, so the profile this gate reads does not exist. A gate whose subject is missing must fail rather than pass vacuously.',
-    ])
-  })
-})
-
-// ---------------------------------------------------------------------------
-
-describe('gate: catalog-wording', () => {
-  /**
-   * @param {string} description - the text inside the enabledModels `.description(...)`.
-   * @param {string} [chain] - extra chained calls before `.description`.
-   * @returns {string} a src/index.js body shaped like the real one.
-   */
-  const schemaSource = (description, chain = '') => `export const Config = z.object({
-  enabledModels: z.array(z.string().min(1))
-    .default(openAICodexCatalogModelIds())${chain}
-    .description('${description}'),
-  modelOverrides: z.dict(z.object({})),
-})
-`
-  const README = 'The allowlist narrows what `listModels` answers.\n'
-
-  test('accepts a description that says catalog', async () => {
-    const root = await fixture({
-      'src/index.js': schemaSource('Codex models this route advertises. It narrows the advertised catalog, not just the picker.'),
-      'README.md': README,
-    })
-    assert.deepEqual(collectCatalogWordingViolations(root), [])
-  })
-
-  const SOFTENED = 'src/index.js: the `enabledModels` schema `.description()` no longer says `catalog`. '
-    + 'The Settings card renders that string verbatim, and it is the only place a user learns that this allowlist narrows the advertised catalog '
-    + 'rather than just the model picker — unchecking a model removes it from every list the harness answers, and finding that out afterwards is a '
-    + 'support call. Say it in the description itself; a comment nearby, or a sibling call in the same chain, does not reach the user.'
-
-  test('rejects a description softened back to "only the picker"', async () => {
-    const root = await fixture({
-      'src/index.js': schemaSource('Codex models the model picker offers.'),
-      'README.md': README,
-    })
-    assert.deepEqual(collectCatalogWordingViolations(root), [SOFTENED])
-  })
-
-  test('is not satisfied by a sibling call in the same chain carrying the token', async () => {
-    // Scoping the check to the region rather than to the description argument
-    // passed on exactly this: the user-visible string had lost the fact while
-    // `.role('…')` beside it carried the word.
-    const root = await fixture({
-      'src/index.js': schemaSource('Codex models the model picker offers.', "\n    .role('catalog')"),
-      'README.md': README,
-    })
-    assert.deepEqual(collectCatalogWordingViolations(root), [SOFTENED])
-  })
-
-  test('rejects a README that no longer names the mechanism', async () => {
-    const root = await fixture({
-      'src/index.js': schemaSource('It narrows the advertised catalog.'),
-      'README.md': 'The allowlist narrows the picker.\n',
-    })
-    assert.deepEqual(collectCatalogWordingViolations(root), [
-      'README.md: does not mention `listModels` anywhere. It is where a reader learns what the allowlist does, and the reason it reaches every '
-      + 'model list is that the harness answers all of them from that one call. Name the mechanism, so the claim stays checkable.',
-    ])
-  })
-
-  test('fails loudly when the schema field it reads is gone', async () => {
-    const root = await fixture({ 'src/index.js': 'export const Config = z.object({})\n', 'README.md': README })
-    assert.deepEqual(collectCatalogWordingViolations(root), [
-      'src/index.js: no `enabledModels:` schema field found, so the text this gate reads does not exist. '
-      + 'A gate that cannot locate its anchor must fail rather than pass quietly. '
-      + 'Restore it, or update the pattern in scripts/check.mjs.',
-    ])
   })
 })
 
@@ -1218,27 +1089,6 @@ describe('the remaining sample-shaped fixes', () => {
       'AGENTS.md': 'Wrap the snippet in ``` when you paste it.\n\nThe resolver lives in `src/resolver.js`.\n',
     })
     assert.equal(collectDocRefViolations(root, undefined).length, 1)
-  })
-
-  test('image-budget follows one level of const indirection', async () => {
-    const root = await fixture({
-      'src/adapter.js': 'const REQUEST_IMAGE_MAX_BYTES = undefined\n'
-        + "const profiles = createProfilesThunk(a, b, {\n  maxRequestImageBytes: 1,\n  requestImagePixelBudget: 2,\n  requestImageMaxBytes: REQUEST_IMAGE_MAX_BYTES,\n})\n",
-    })
-    assert.equal(collectImageBudgetViolations(root).length, 1)
-  })
-
-  test('image-budget judges each call site on its own', async () => {
-    const root = await fixture({
-      'src/adapter.js': "const first = createProfilesThunk(a, b, {\n  maxRequestImageBytes: 1,\n  requestImagePixelBudget: 2,\n  requestImageMaxBytes: 3,\n})\n"
-        + "const second = createProfilesThunk(a, b, { provider: 'opencode-go', maxRequestImageBytes: 1 })\n",
-    })
-    assert.equal(collectImageBudgetViolations(root).length, 1, 'joining the call sites let one supply the other\'s fields')
-  })
-
-  test('catalog-wording fails rather than reporting a check on a README that is gone', async () => {
-    const root = await fixture({ 'src/index.js': "enabledModels: x\n    .description('narrows the catalog'),\n  modelOverrides: y\n" })
-    assert.equal(collectCatalogWordingViolations(root).length, 1)
   })
 
   test('a CJK exemption reason is accepted, and a two-character one is not', () => {
