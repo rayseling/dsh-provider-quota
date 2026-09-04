@@ -16,7 +16,7 @@
 | [6](notes/postmortems/0006-fabricated-class-name-in-the-instructions.md) | 文档里带反引号的符号名是一句「这是真的」的断言。不确定就别加反引号 | `doc-symbols` 门 |
 | [7](notes/postmortems/0007-the-picker-that-saved-into-nothing.md) | 设置 key 的**写方和读方分处两模块**时 seam 不查两半是否都在。少一半：写入成功、落盘、无人读、界面报成功 | 无，只能靠人问 |
 | [8](notes/postmortems/0008-a-docstring-ate-the-export.md) | 漏一个 `*/`，注释会吞到**下一个** `*/`，中间的 `export` 被吃掉而语法合法 | `scanProblems`（在 `service-reads` / `deps` 里跑） |
-| [9](notes/postmortems/0009-a-renamed-failure-code-stopped-matching.md) | 宿主的失败码归 `<域>/<码>` 管，且会改名。比较两边都是字符串：改名后不抛错，只是不再匹配，落到旁边的兜底 | `remote-codes` 门 |
+| [9](notes/postmortems/0009-a-renamed-failure-code-stopped-matching.md) | 失败码改名后不抛错，只是不再匹配，落到旁边的兜底。宿主的归 `<域>/<码>` 管；**插件自己的额度码同理**，产出方在 `src/usage.js`，判读方在 `src/client.js` | `remote-codes` 门（两半都查） |
 
 坑 3（图片预算三字段）和坑 4（`listModels` 收窄）的主体在 0.5.0 随模型路由一起移出本仓库，
 复盘留档：[0003](notes/postmortems/0003-image-budget-fields-must-travel-together.md)、[0004](notes/postmortems/0004-listmodels-narrows-every-catalog-reader.md)。
@@ -74,9 +74,9 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 
 不写出来，「全绿」就会被当成「全对」：
 
-- **`src/client.js` 占 `src/` 将近一半，行为测试只到额度面板为止。** 只有 `windowsPanelElement`
-  有一条真渲染的用例；其余组件被**捕获**却从不调用（`react` 是 `{}`），换成 `throw` 照样全绿。
-  唯一验证手段是人去看真实的 `dsh web`。
+- **`src/client.js` 的行为测试只到卡片折叠态。** 真渲染的只有 `windowsPanelElement` 和
+  `CodexCard`（假 React）；`SessionQuotaChip` 和弹层从不调用，换成 `throw` 照样全绿。
+  样式和真实 hook 行为只能人去看 `dsh web`。
 - **凭据记录的跨进程互斥没测过**：`modifyRecord` 的锁只在一个进程里跑过；`cordis.patch.yml` 只比字符串。
 - **`npm install` 装不起来**（未发布的传递 peer 会 404）。`deps` 管的是清单**诚实**，不是可安装性。
 - **CI 绿不代表文档引用和失败码解析得到**（那三道留在本地），也不代表 peer 测试跑过（在 CI 里它们从不执行）。

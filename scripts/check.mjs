@@ -928,8 +928,8 @@ export function collectDocSymbolViolations(root, harnessRoot) {
 const REMOTE_CONSUMER = 'src/client.js'
 
 /**
- * Every failure code the browser module discriminates on must be one the Host
- * can actually send.
+ * Every failure code the browser module discriminates on must be one something
+ * can actually send it.
  *
  * `src/client.js` decides what a failed settings write says to the operator by
  * comparing `error.code` against literals. Both sides of that comparison are
@@ -946,19 +946,32 @@ const REMOTE_CONSUMER = 'src/client.js'
  * under the harness's `packages/**\/src/**`, which is where each owning
  * package declaration-merges its own codes.
  *
+ * The second half is the same failure with both ends inside this repository.
+ * `quotaFailureText` maps the plugin's OWN codes to copy, and those codes are
+ * minted three files away — `CodexUsageError('rate-limited', …)` in
+ * `src/usage.js`, one more in `src/index.js`, plus the transport failures the
+ * browser assigns itself. Rename one of those and nothing throws: the branch
+ * stops matching and every account in that state silently reads the generic
+ * "could not load usage" instead of the sentence written for it. So every
+ * literal that function compares must be one some source here can produce.
+ *
  * Scope, and what this cannot prove:
  *
- *  - only `REMOTE_CONSUMER` is read. The host-side modules compare `.code`
- *    against Node errno (`ENOENT`) and pi-ai error shapes, which are not this
- *    vocabulary; `service-reads` skips this file for the mirror-image reason.
- *  - the anchor is `.code === '…'`, so the plugin's OWN quota codes — passed
- *    to `quotaFailureText(code, …)` as a bare parameter — are not judged, and
- *    `var c = error.code; c === 'gateway/internal'` slips past exactly the way
- *    `ctx['settings']` slips past `service-reads`. Rewriting a plugin-owned
- *    comparison into `error.code === '…'` will be flagged; sign it with
- *    `// gate-exempt: remote-codes <reason>`.
- *  - a code being DECLARED does not mean this endpoint can send it. That the
- *    branch is reachable is the suite's job, not this gate's.
+ *  - only `REMOTE_CONSUMER` is read for comparisons. The host-side modules
+ *    compare `.code` against Node errno (`ENOENT`) and pi-ai error shapes,
+ *    which are not this vocabulary; `service-reads` skips this file for the
+ *    mirror-image reason.
+ *  - the Remote half is conditional: this plugin stopped writing settings, so
+ *    there may legitimately be no `.code === '…'` left. The plugin half is
+ *    unconditional, and an absent `quotaFailureText` fails the gate rather
+ *    than emptying it.
+ *  - `var c = error.code; c === 'gateway/internal'` slips past exactly the way
+ *    `ctx['settings']` slips past `service-reads`.
+ *  - the reverse direction is deliberately not checked: a produced code with
+ *    no branch of its own falls to the generic copy, which is a choice
+ *    (`aborted`, `upstream`) rather than a defect.
+ *  - a code being DECLARED or PRODUCIBLE does not mean this endpoint sends it.
+ *    That the branch is reachable is the suite's job, not this gate's.
  * @param {string} root - checkout to scan.
  * @param {string|undefined} harnessRoot - harness checkout, when reachable.
  * @returns {string[]} one message per violation.
@@ -987,13 +1000,9 @@ export function collectRemoteCodeViolations(root, harnessRoot) {
   // is signed has still been read, and reporting it as "nothing to resolve"
   // would send the reader looking for a gate that had in fact done its job.
   const wanted = found.filter(item => !exempt.lines.has(item.line))
-  if (found.length === 0) {
-    return [`${REMOTE_CONSUMER}: no \`.code === '…'\` comparison found, so this gate has nothing to resolve. `
-      + 'It was added because the browser half silently stopped matching a renamed Host code; a version of this file '
-      + 'that discriminates failures some other way needs the gate rewritten, not left passing vacuously.']
-  }
-  if (wanted.length === 0) return []
-  if (harnessRoot === undefined) return [harnessUnreachable('remote-codes', wanted.length)]
+  const violations = collectPluginCodeViolations(root, raw)
+  if (wanted.length === 0) return violations
+  if (harnessRoot === undefined) return [...violations, harnessUnreachable('remote-codes', wanted.length)]
 
   const declared = declaredRemoteCodes(harnessRoot)
   if (declared.size === 0) {
@@ -1001,13 +1010,83 @@ export function collectRemoteCodeViolations(root, harnessRoot) {
       + 'The harness owns this vocabulary, so an empty set means this gate read the wrong tree rather than that every '
       + 'code is fine. Point `DSH_HARNESS_ROOT` at a deepseek-harness checkout.']
   }
-  return wanted
+  return [...violations, ...wanted
     .filter(item => !declared.has(item.code))
     .map(item =>
       `${REMOTE_CONSUMER}:${item.line}: \`${item.code}\` is not a code the harness at ${harnessRoot} declares. `
       + 'A comparison against a code the Host cannot send throws nothing and fails nothing — the branch just never '
       + `runs, and the operator gets whichever fallback sits beside it. Grep the harness for the ${item.code.includes('/') ? 'renamed' : 'namespaced'} `
       + 'spelling in a `RemoteErrorDetailsMap` block and use that, or sign the line `// gate-exempt: remote-codes <reason>`.',
+    )]
+}
+
+/** Where the plugin's own quota codes are minted. */
+const CODE_PRODUCERS = ['src/usage.js', 'src/index.js']
+
+/** The function whose branches decide which sentence one failure gets. */
+const CODE_CONSUMER = 'quotaFailureText'
+
+/**
+ * Read one function's body by brace matching from its declaration.
+ * @param {string} text - source to search.
+ * @param {string} name - function name.
+ * @returns {string|undefined} the body, or nothing when the function is absent.
+ */
+function functionBody(text, name) {
+  const at = text.indexOf(`function ${name}(`)
+  if (at === -1) return undefined
+  const open = text.indexOf('{', at)
+  if (open === -1) return undefined
+  let depth = 0
+  for (let end = open; end < text.length; end++) {
+    if (text[end] === '{') depth++
+    else if (text[end] === '}' && --depth === 0) return text.slice(open, end)
+  }
+  return undefined
+}
+
+/**
+ * Every quota code {@link CODE_CONSUMER} branches on must be one this package
+ * can mint.
+ * @param {string} root - checkout to scan.
+ * @param {string} clientRaw - the browser module, uncommented.
+ * @returns {string[]} one message per violation.
+ */
+function collectPluginCodeViolations(root, clientRaw) {
+  const client = stripComments(clientRaw)
+  const body = functionBody(client, CODE_CONSUMER)
+  if (body === undefined) {
+    return [`${REMOTE_CONSUMER}: no \`${CODE_CONSUMER}\` function found, so the plugin's own failure vocabulary cannot be `
+      + 'resolved. A browser half that maps failures to copy some other way needs this gate rewritten, not left passing '
+      + 'vacuously — the failure it guards is a renamed code that silently stops matching.']
+  }
+  const producible = new Set()
+  // What the browser assigns itself when a read never reaches the Host.
+  for (const hit of client.matchAll(/\.failure\s*=\s*'([^']+)'/gu)) producible.add(hit[1])
+  for (const hit of client.matchAll(/\.failure\s*=\s*[^\n']*\?\s*'([^']+)'\s*:\s*'([^']+)'/gu)) {
+    producible.add(hit[1])
+    producible.add(hit[2])
+  }
+  for (const rel of CODE_PRODUCERS) {
+    const text = readText(root, rel)
+    if (text === undefined) {
+      return [`${rel}: absent, so the codes \`${CODE_CONSUMER}\` branches on cannot be resolved against what this package `
+        + 'mints. Reporting green here would claim a check that never ran. Run from a checkout root.']
+    }
+    const source = stripComments(text)
+    for (const hit of source.matchAll(/CodexUsageError\(\s*'([^']+)'/gu)) producible.add(hit[1])
+    for (const hit of source.matchAll(/code:\s*'([^']+)'/gu)) producible.add(hit[1])
+    for (const hit of source.matchAll(/return\s+'([a-z][a-z-]*)'/gu)) producible.add(hit[1])
+  }
+  const branches = new Set()
+  for (const hit of body.matchAll(/\bcode\s*===\s*'([^']+)'/gu)) branches.add(hit[1])
+  return [...branches]
+    .filter(code => !producible.has(code))
+    .map(code =>
+      `${REMOTE_CONSUMER}: \`${CODE_CONSUMER}\` branches on \`${code}\`, which nothing in `
+      + `${CODE_PRODUCERS.join(' / ')} or this file can produce. A branch on a code nobody mints throws nothing and `
+      + 'fails nothing — the account in that state silently gets the generic failure copy instead of the sentence '
+      + 'written for it. Re-read the producing side for the current spelling, or drop the branch.',
     )
 }
 
@@ -1739,7 +1818,7 @@ function gates(root, { bare = false } = {}) {
     {
       id: 'remote-codes',
       run: () => collectRemoteCodeViolations(root, harness),
-      summary: () => `remote-codes: every \`.code === '…'\` in ${REMOTE_CONSUMER} resolved against the harness's declared \`RemoteErrorDetailsMap\`; ${harnessNote}. Proves the code exists, not that this endpoint can send it.`,
+      summary: () => `remote-codes: every \`.code === '…'\` in ${REMOTE_CONSUMER} resolved against the harness's declared \`RemoteErrorDetailsMap\`, and every code \`${CODE_CONSUMER}\` branches on against what ${CODE_PRODUCERS.join(' / ')} mint; ${harnessNote}. Proves the code exists, not that this endpoint can send it.`,
     },
     {
       id: 'suite',
