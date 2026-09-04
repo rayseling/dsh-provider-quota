@@ -46,6 +46,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-credentials-local": "*",
     "@deepseek-ai/dsh-settings-file": "*"
   }
 }
