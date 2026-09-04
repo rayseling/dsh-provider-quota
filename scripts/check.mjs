@@ -1149,20 +1149,20 @@ function exportPaths(value, out = []) {
 }
 
 /**
- * The plugin's own name is spelled in four places and none of the four is
- * derived from the others; `npm test` has to be the command that runs these
- * gates; and `CLAUDE.md` has to be the link, not a second copy or nothing.
+ * The package name is spelled in three places and the composition entry id in
+ * two, and none of the five is derived from another; `npm test` has to be the
+ * command that runs these gates; and `CLAUDE.md` has to be the link, not a
+ * second copy or nothing.
  *
- * The docstring in `src/index.js` already states the name contract — the
- * plugin name is also the composition entry id and the key the browser card
- * registers under, and the Settings tab dispatches a card only to the
- * namespace it names. This makes that prose executable: editing
- * `export const name` alone leaves the whole suite green.
+ * The package name reaches the browser as the module-table handoff id
+ * (`sink.load({ id })`), which the loader graph keys on: a bundle whose id is
+ * not the package the shell loaded it for is a module nothing can `require`,
+ * and nothing says so — the entry simply never runs. The entry `name:` is the
+ * module specifier the loader imports, so that one is a hard contract too.
  *
- * One thing this gate must NOT claim: the loader imports the composition
- * entry's `name:`, not its `id:`, so a drifted `id` does not stop the
- * composition from loading. It breaks the card dispatch, which is what the
- * message says.
+ * The entry `id:` is a softer one: the loader imports the entry's `name:`, not
+ * its `id:`, so a drifted id still loads. It is what a `--patch` overlay and
+ * `dsh plugin remove` address, and what the Cordis plugin reports itself as.
  * @param {string} root - checkout to scan.
  * @returns {string[]} one message per violation.
  */
@@ -1201,33 +1201,36 @@ export function collectIdentityViolations(root) {
   const yaml = patch.replace(/#.*$/gmu, '')
   const source = stripComments(index)
   const pluginName = capture(source, /export\s+const\s+name\s*=\s*['"]([^'"]+)['"]/u, 'src/index.js `export const name`')
-  const namespace = capture(source, /export\s+const\s+settingsNs\s*=\s*['"]([^'"]+)['"]/u, 'src/index.js `export const settingsNs`')
-  const clientNs = capture(stripComments(client), /SETTINGS_NS\s*=\s*['"]([^'"]+)['"]/u, 'src/client.js `SETTINGS_NS`')
+  const handoffId = capture(stripComments(client), /sink\.load\(\s*\{\s*id:\s*['"]([^'"]+)['"]/u, 'src/client.js `sink.load({ id })`')
   const entryId = capture(yaml, /^\s*-?\s*id:\s*(\S+)\s*$/mu, 'cordis.patch.yml `id:`')
   const entryName = capture(yaml, /^\s*name:\s*(\S+)\s*$/mu, 'cordis.patch.yml `name:`')
 
-  if (pluginName !== undefined) {
-    const spellings = [
-      { value: namespace, where: 'src/index.js `export const settingsNs`' },
-      { value: clientNs, where: 'src/client.js `SETTINGS_NS`' },
-      { value: entryId, where: 'cordis.patch.yml `id:`' },
-    ]
-    for (const { value, where } of spellings) {
-      if (value === undefined || value === pluginName) continue
-      violations.push(
-        `${where}: spells "${value}" while src/index.js \`export const name\` spells "${pluginName}". `
-        + 'These four are one identity: the Settings tab dispatches a card only to the namespace it names, so a drift here makes the card silently never arrive. '
-        + "(The loader imports the entry's `name:`, not its `id:`, so the composition still loads — which is why the suite stays green.) "
-        + 'Make all four agree.',
-      )
-    }
+  if (pluginName !== undefined && entryId !== undefined && entryId !== pluginName) {
+    violations.push(
+      `cordis.patch.yml \`id:\`: spells "${entryId}" while src/index.js \`export const name\` spells "${pluginName}". `
+      + 'These are one identity: the entry id is what a `--patch` overlay and `dsh plugin` address, and what the loaded plugin reports itself as. '
+      + "(The loader imports the entry's `name:`, not its `id:`, so the composition still loads — which is why the suite stays green.) "
+      + 'Make both agree.',
+    )
   }
 
-  if (entryName !== undefined && entryName !== manifest.name) {
+  for (const { value, where, why } of [
+    {
+      value: entryName,
+      where: 'cordis.patch.yml `name:`',
+      why: "the loader treats the entry's `name` as the module specifier it imports (vendor/loader/src/config/entry.ts), "
+        + 'so a mismatch means the composition imports a package that is not this one',
+    },
+    {
+      value: handoffId,
+      where: 'src/client.js `sink.load({ id })`',
+      why: 'the client module table keys the browser half on this id, so a mismatch is a module nothing can require — '
+        + 'the entry never runs, and nothing reports it',
+    },
+  ]) {
+    if (value === undefined || value === manifest.name) continue
     violations.push(
-      `cordis.patch.yml \`name:\`: is "${entryName}" but package.json \`name\` is "${manifest.name}". `
-      + "This one is a real contract: the loader treats the entry's `name` as the module specifier it imports (vendor/loader/src/config/entry.ts). "
-      + 'A mismatch means the composition imports a package that is not this one.',
+      `${where}: is "${value}" but package.json \`name\` is "${manifest.name}". This is a real contract: ${why}.`,
     )
   }
 
@@ -1770,7 +1773,7 @@ function gates(root, { bare = false } = {}) {
     {
       id: 'identity',
       run: () => collectIdentityViolations(root),
-      summary: () => 'identity: 4 name spellings, the loader contract, the `npm test` wiring, package.json exports/bin, the CLAUDE.md link — all agree. Proves nothing about whether the composition patch is semantically right.',
+      summary: () => 'identity: 3 spellings of the package name plus the entry id, the `npm test` wiring, package.json exports/bin, the CLAUDE.md link — all agree. Proves nothing about whether the composition patch is semantically right.',
     },
     {
       id: 'service-reads',

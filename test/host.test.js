@@ -1,13 +1,13 @@
 /**
- * Integration tests for what this plugin reads out of settings and where it
- * mounts: its own namespace (which is what makes the browser card
- * dispatchable), the Connection channel, and the two differently-shaped
- * sections the API-key quota routes are configured in.
+ * Integration tests for the host half: where the quota channel mounts, and the
+ * two differently-shaped sections — both owned by OTHER plugins — that an
+ * API-key quota route reads its endpoint and credential reference out of.
+ * This plugin registers no section of its own; it only reads.
  *
  * These boot the real seam — `FileSettingsProvider` over a temp `$DSH_HOME`
  * and this plugin — rather than stubbing `ctx.settings`. A stub would only
- * test the shape of our own calls; the properties worth pinning (which section
- * shape a route reads, whether a namespace is described) live in the seam.
+ * test the shape of our own calls; the property worth pinning — which section
+ * shape a route reads — lives in the seam.
  *
  * Nothing here reaches OpenAI: every upstream is a stubbed `globalThis.fetch`,
  * and no Codex credential is ever resolved.
@@ -71,29 +71,11 @@ function captureRpc() {
   }
 }
 
-describe('the plugin namespace', { skip }, () => {
-  test('the namespace is registered, which is what dispatches the browser card', async () => {
-    // Not decoration: the plugins tab renders the intersection of the
-    // namespaces the Host serves and the cards registered under them, so a
-    // card whose namespace nobody registers is never dispatched. This section
-    // holds no field — registering it is the whole reason it exists.
-    const home = await freshHome()
-    const ctx = await boot(home)
-    assert.ok(
-      ctx.settings.describe().some(descriptor => descriptor.ns === plugin.settingsNs),
-      `settings.describe() must list ${plugin.settingsNs}`,
-    )
-    // The browser half spells this namespace as a literal, so that its own
-    // suite needs no peer dependencies. This is the other end of that pact:
-    // the card registers under the name asserted here, and a rename that
-    // touched only one half would fail here rather than in a browser.
-    assert.equal(plugin.settingsNs, 'provider-quota')
-  })
-
-  test('without a settings provider the quota still answers, only the card is lost', async () => {
-    // The section makes the card dispatchable; it serves no value. So a
-    // composition with no settings provider at all must still mount the
-    // channel — a headless host reads quota through it and has no card to lose.
+describe('a composition with no settings provider at all', { skip }, () => {
+  test('still mounts the quota channel', async () => {
+    // The plugin reads sections but registers none, so nothing about it needs
+    // a settings provider to exist. A headless host that mounts none must
+    // still get the quota RPC.
     const home = await freshHome()
     const rpc = captureRpc()
     await boot(home, { settings: false, connection: rpc.connection })

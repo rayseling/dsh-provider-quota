@@ -1,12 +1,12 @@
 {
   "_note": "`tests` is the one number here that turns red into green. It may only change in the same commit that adds or removes a test — see AGENTS.md. `files` and the zero-skip rule need no maintenance.",
-  "tests": 188,
+  "tests": 186,
   "files": [
     "check",
     "client",
     "credentials",
+    "host",
     "redact",
-    "settings",
     "usage"
   ]
 }

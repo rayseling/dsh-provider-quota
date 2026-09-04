@@ -4,9 +4,15 @@
  *
  * It registers one read-only Connection RPC that answers the account-level
  * usage of the session's current model route — Codex 5h/7d windows, OpenCode
- * Go 5h/7d/1m windows, or the official DeepSeek balance — for the Settings
- * card and the session-header chip. Connection applies request trust and
- * browser-session authentication first, and every credential stays host-side.
+ * Go 5h/7d/1m windows, or the official DeepSeek balance — for the
+ * session-header chip that is this plugin's only surface. Connection applies
+ * request trust and browser-session authentication first, and every credential
+ * stays host-side.
+ *
+ * It configures nothing, so it registers no settings section. It does READ two
+ * sections other plugins own — `llm-pi-ai` and `llm-deepseek` — because the
+ * endpoint and credential reference of an API-key quota route are the ones
+ * that route is already configured with.
  *
  * It registers no model route. The `openai-codex` route is the harness's own
  * `llm-pi-ai` plugin's to serve: that package reached pi-ai's OAuth catalog
@@ -22,7 +28,6 @@
  * @module dsh-provider-quota
  */
 
-import z from '@deepseek-ai/schemastery'
 import { createCodexCredentialStore, readCodexCredential } from './credentials.js'
 import { createOpenAICodexAccessResolver } from './token.js'
 import {
@@ -65,39 +70,13 @@ export const name = 'provider-quota'
  * No service is required, and saying so is not a formality.
  *
  * Every service this plugin touches is optional and read soft: `connection`
- * and `settings` through `ctx.inject`, `credentials` through `ctx.get`. A name
+ * through `ctx.inject`, `settings` and `credentials` through `ctx.get`. A name
  * listed here would instead hold this fiber pending until that service
  * arrived — a headless composition mounting no Connection would keep the
  * plugin unloaded forever rather than mounting nothing. The empty list is also
  * what lets `service-reads` tell a soft read from an undeclared one.
  */
 export const inject = []
-
-/**
- * Namespace of this plugin's section in `$DSH_HOME/settings.yaml`.
- *
- * It is the plugin name, which is also the composition entry id and the key
- * the browser card registers under — the Settings tab dispatches a card only
- * to the namespace it names, so both halves must spell this the same way.
- */
-export const settingsNs = 'provider-quota'
-
-/**
- * The section this plugin serves: nothing.
- *
- * It is registered anyway, and the empty schema is the honest shape rather
- * than a placeholder for a field to come. The plugins tab renders the
- * INTERSECTION of two ledgers — the namespaces the Host serves and the cards
- * registered into `settings.plugin.item` — so a card whose namespace nobody
- * registers is never dispatched
- * (`packages/client/ui-settings-plugins/src/client/tab-store.ts`). This
- * plugin's card displays quota and edits nothing, so without this registration
- * it would not appear at all.
- *
- * Nothing reads a value out of it, which is why there is no `validate` hook:
- * there is no field an edit could get wrong.
- */
-export const Config = z.object({})
 
 /**
  * Read one settings section defensively: an absent service, an unmounted
@@ -186,10 +165,10 @@ function httpBase(value) {
 }
 
 /**
- * Mount the quota RPC, and the namespace that lets its card be dispatched.
+ * Mount the quota RPC.
  *
- * Both are effects owned by this plugin's fiber, so unloading the plugin
- * releases the channel and the section with it.
+ * It is an effect owned by this plugin's fiber, so unloading the plugin
+ * releases the channel with it.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
  */
 export function apply(ctx) {
@@ -254,28 +233,5 @@ export function apply(ctx) {
   })
   ctx.inject(['connection'], (connectionCtx) => {
     connectionCtx.connection.rpc.handle(OPENAI_CODEX_USAGE_CHANNEL, createProviderUsageRpc(usage))
-  })
-  // `installSection` is a method on the settings service, so the
-  // optional-service wiring is the caller's: the body runs only while a
-  // provider is attached. The owner argument is `ctx`, not `settingsCtx` — the
-  // seam uses it to tell this plugin unloading from the provider merely
-  // detaching.
-  ctx.inject(['settings'], (settingsCtx) => {
-    try {
-      settingsCtx.settings.installSection(ctx, settingsNs, Config, {}, {
-        // Nothing is served from the section, so neither hook has work to do.
-        // They are required by the seam, and writing them as no-ops states
-        // that plainly.
-        setSource: () => {},
-        onChange: () => {},
-      })
-    } catch (error) {
-      // The section is what makes the card dispatchable, not what makes the
-      // quota readable. Losing it costs the Settings card while the chip and
-      // the RPC keep working, which is worth saying out loud rather than
-      // failing a fiber that is otherwise healthy.
-      ctx.logger.error('dsh-provider-quota: settings namespace unavailable; the Settings card cannot be dispatched')
-      ctx.logger.error(error)
-    }
   })
 }

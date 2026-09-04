@@ -38,7 +38,8 @@
 
 ## 守住它的门
 
-没有门——这条是**行为性**的，脚本看不见。守住它的是 `test/settings.test.js` 里那条
+没有门——这条是**行为性**的，脚本看不见。当时守住它的是 test/settings.test.js 里那条
 「a stored allowlist the catalog outgrew survives the STARTUP read, sizing intact」：
 先写 `settings.yaml`（漂移的 id 旁边放一个好窗口），**再**启动，断言窗口还在。
+0.6.0 起本插件不再登记任何 section，那条测试随之删除；规则对下一个写 `validate` 的人仍然成立。
 把 catalog 检查挪回 `validate` 会让它连同另外两条一起变红。

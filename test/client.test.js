@@ -10,20 +10,14 @@
  * - what the two surfaces actually put on screen, which is the only thing this
  *   plugin's browser half does at all.
  *
- * They need no peer dependencies, so they run in any checkout — which is why
- * the namespace below is a literal rather than an import of the host half:
- * importing `../src/index.js` would pull pi-ai and the settings seam in behind
- * it and make this suite fail to load wherever those are absent. The two
- * halves are held to the same spelling from the other side instead, by an
- * assertion in `settings.test.js`, which needs those peers anyway.
+ * They need no peer dependencies, so they run in any checkout: importing
+ * `../src/index.js` would pull pi-ai and the credential seam in behind it and
+ * make this suite fail to load wherever those are absent.
  */
 
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { describe, test } from 'node:test'
-
-/** The namespace both halves must spell identically; see the note above. */
-const settingsNs = 'provider-quota'
 
 const source = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
 
@@ -142,7 +136,7 @@ describe('module table contract', () => {
     // The seed set is fixed (packages/client/web/src/seed.ts); a require
     // outside it resolves only by luck and fails the page when the luck runs
     // out, so the set this bundle depends on is pinned here.
-    assert.deepEqual(materialize().required, ['react', '@deepseek-ai/dsh-client-ui-primitives'])
+    assert.deepEqual(materialize().required, ['react'])
   })
 
   test('exports a cordis plugin that declares no services', () => {
@@ -152,90 +146,69 @@ describe('module table contract', () => {
     assert.equal(exports.__esModule, undefined)
   })
 
-  test('edits the same namespace the host half registers', () => {
-    assert.equal(materialize().exports.SETTINGS_NS, settingsNs)
-  })
 })
 
 describe('activation', () => {
-  test('names only services a web shell answers, so the card actually mounts', () => {
+  test('names only services a web shell answers, so the chip actually mounts', () => {
     // A name nothing provides parks the fiber forever — no throw, no console
-    // line, just a card that never appears. The failure is invisible except
+    // line, just a chip that never appears. The failure is invisible except
     // through this: did it register?
     const { exports } = materialize()
     const ctx = fakeContext()
     exports.apply(ctx)
     assert.deepEqual(ctx.missing, [], 'every injected name must be one a web shell provides')
     assert.ok(ctx.registrations.length > 0, 'a parked fiber registers nothing')
-    assert.ok(ctx.injections[0].includes('connection'), 'the quota read is the one service this card cannot do without')
+    assert.ok(ctx.injections[0].includes('connection'), 'the quota read is the one service this chip cannot do without')
   })
 
-  test('a namespace the shell does not provide parks the card instead of mounting it half-wired', () => {
+  test('a service the shell does not provide parks the entry instead of mounting it half-wired', () => {
     const { exports } = materialize()
     const ctx = fakeContext()
     const realInject = ctx.inject
     ctx.inject = (names, callback) => realInject(names.map(name => name === 'connection' ? 'conection' : name), callback)
     exports.apply(ctx)
     assert.deepEqual(ctx.missing, ['conection'])
-    assert.equal(ctx.registrations.length, 0, 'a card that cannot reach the quota RPC must not register')
+    assert.equal(ctx.registrations.length, 0, 'a chip that cannot reach the quota RPC must not register')
   })
 
-  test('registers the card keyed by the namespace the tab dispatches on', () => {
+  test('registers exactly one entry: the session-header chip', () => {
+    // Registering into `settings.plugin.item` would put a second copy of this
+    // panel behind a settings section that exists only to dispatch it. There
+    // is one surface, so there is one registration.
     const { exports } = materialize()
     const ctx = fakeContext()
     exports.apply(ctx)
-    assert.equal(ctx.registrations.length, 2)
+    assert.equal(ctx.registrations.length, 1)
     const { options, component } = ctx.registrations[0]
-    assert.equal(options.name, 'settings.plugin.item')
-    assert.equal(options.key, settingsNs)
+    assert.equal(options.name, 'conversation.session.header.utilities')
+    assert.equal(options.id, 'dsh-provider-quota-chip')
     assert.equal(typeof options.inject, 'function')
     assert.equal(typeof component, 'function')
+    assert.equal(options.inject(), options.inject(), 'the face identity is stable, so the renderer can cache it')
   })
 
-  test('registers the session-header quota chip beside the card, sharing one store', () => {
-    const { exports } = materialize()
-    const ctx = fakeContext()
-    exports.apply(ctx)
-    const chip = ctx.registrations[1]
-    assert.equal(chip.options.name, 'conversation.session.header.utilities')
-    assert.equal(chip.options.id, 'dsh-provider-quota-chip')
-    assert.equal(typeof chip.options.inject, 'function')
-    assert.equal(typeof chip.component, 'function')
-    const cardFace = ctx.registrations[0].options.inject()
-    const chipFace = chip.options.inject()
-    assert.equal(chipFace.hooks.codexCard, cardFace.hooks.codexCard, 'one usage store answers both surfaces')
-    assert.equal(typeof chipFace.refreshUsage, 'function')
-    assert.equal(chip.options.inject(), chipFace, 'the chip face identity is stable too')
-  })
-
-  test('a harness without the conversation slot still gets the card', () => {
+  test('a harness that declares no session-header slot registers nothing and still boots', () => {
     const { exports } = materialize()
     const ctx = fakeContext()
     const injected = []
     ctx.slots = {
-      inject: (name, callback) => { injected.push(name); if (name === 'settings.plugin.item') callback() },
+      inject: (name) => { injected.push(name) },
       register: (options, component) => { ctx.registrations.push({ options, component }); return () => {} },
     }
-    exports.apply(ctx)
-    assert.deepEqual(injected, ['settings.plugin.item', 'conversation.session.header.utilities'])
-    assert.equal(ctx.registrations.length, 1, 'the undeclared slot contributes nothing, the card survives')
-    assert.equal(ctx.registrations[0].options.name, 'settings.plugin.item')
+    assert.doesNotThrow(() => { exports.apply(ctx) })
+    assert.deepEqual(injected, ['conversation.session.header.utilities'])
+    assert.equal(ctx.registrations.length, 0, 'an undeclared slot contributes nothing, and costs nothing')
   })
 
-  test('a registry that refuses the chip keeps the card', () => {
+  test('a registry that refuses the chip does not fail the page', () => {
     const { exports } = materialize()
     const ctx = fakeContext()
     ctx.slots = {
       inject: (_name, callback) => { callback() },
-      register: (options, component) => {
-        if (options.name === 'conversation.session.header.utilities') throw new Error('slot closed')
-        ctx.registrations.push({ options, component })
-        return () => {}
-      },
+      register: () => { throw new Error('slot closed') },
     }
     assert.doesNotThrow(() => { exports.apply(ctx) })
-    assert.equal(ctx.registrations.length, 1)
-    assert.equal(ctx.registrations[0].options.name, 'settings.plugin.item')
+    assert.equal(ctx.registrations.length, 0)
   })
 
   test('publishes a face whose hooks the slot renderer can bind', () => {
@@ -243,8 +216,8 @@ describe('activation', () => {
     const ctx = fakeContext()
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
-    assert.equal(typeof face.hooks.codexCard.getSnapshot, 'function')
-    assert.equal(typeof face.hooks.codexCard.subscribe, 'function')
+    assert.equal(typeof face.hooks.quota.getSnapshot, 'function')
+    assert.equal(typeof face.hooks.quota.subscribe, 'function')
     for (const name of ['refreshUsage', 'loadUsage', 'modelDirectoryFor']) {
       assert.equal(typeof face[name], 'function', `face.${name}`)
     }
@@ -264,7 +237,7 @@ describe('activation', () => {
     assert.equal(ctx.registrations.length, 0)
   })
 
-  test('survives a slot registry that refuses the card', () => {
+  test('survives a slot registry that refuses every entry', () => {
     const { exports } = materialize()
     const ctx = fakeContext()
     ctx.slots = { inject: (_name, callback) => { callback() }, register: () => { throw new Error('slot closed') } }
@@ -325,7 +298,7 @@ describe('usage card state', () => {
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     await new Promise(resolve => setImmediate(resolve))
-    const state = face.hooks.codexCard.getSnapshot()
+    const state = face.hooks.quota.getSnapshot()
     assert.equal(state.routes.codex.state, 'ready')
     assert.deepEqual(state.routes.codex.usage, result.value)
     const usageCall = calls.find(call => call.method === 'usage')
@@ -384,7 +357,7 @@ describe('usage card state', () => {
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(usageCalls.length, 2)
     assert.deepEqual(usageCalls[1], { provider: 'openai-codex', force: false }, 'polling preserves the shared Host cache')
-    assert.equal(face.hooks.codexCard.getSnapshot().routes.codex.usage.windows[0].remainingPercent, 87)
+    assert.equal(face.hooks.quota.getSnapshot().routes.codex.usage.windows[0].remainingPercent, 87)
     assert.equal(timers.length, 2, 'a settled poll schedules exactly one successor')
 
     ctx.disposeEffects()
@@ -427,7 +400,7 @@ describe('usage card state', () => {
     await new Promise(resolve => setImmediate(resolve))
     const face = ctx.registrations[0].options.inject()
     const panel = () => flatten(exports.windowsPanelElement(
-      face.hooks.codexCard.getSnapshot().routes.codex, exports.TEXT.zh, () => {}, 'zh'))
+      face.hooks.quota.getSnapshot().routes.codex, exports.TEXT.zh, () => {}, 'zh'))
 
     const ready = panel()
     assert.ok(ready.text.includes('88'), 'the settled read shows the 5h window')
@@ -469,7 +442,7 @@ describe('usage card state', () => {
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     await new Promise(resolve => setImmediate(resolve))
-    const state = face.hooks.codexCard.getSnapshot()
+    const state = face.hooks.quota.getSnapshot()
     assert.equal(state.routes.codex.state, 'ready')
     assert.equal(state.routes.codex.failure, undefined)
     assert.deepEqual(state.routes.codex.usage.windows, [])
@@ -487,7 +460,7 @@ describe('usage card state', () => {
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
     await new Promise(resolve => setImmediate(resolve))
-    const state = face.hooks.codexCard.getSnapshot()
+    const state = face.hooks.quota.getSnapshot()
     assert.equal(state.routes.codex.failure, 'signed-out')
     const copy = exports.quotaFailureText(state.routes.codex.failure, 'zh')
     assert.match(copy, /登录记录缺失/u)
@@ -506,11 +479,11 @@ describe('usage card state', () => {
     })
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
-    assert.equal(face.hooks.codexCard.getSnapshot().routes.codex.state, 'loading')
+    assert.equal(face.hooks.quota.getSnapshot().routes.codex.state, 'loading')
     ctx.disposeEffects()
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(aborted, true)
-    assert.equal(face.hooks.codexCard.getSnapshot().routes.codex.state, 'loading', 'disposed controller publishes no late failure')
+    assert.equal(face.hooks.quota.getSnapshot().routes.codex.state, 'loading', 'disposed controller publishes no late failure')
   })
 })
 
@@ -564,7 +537,7 @@ describe('provider route state', () => {
     const face = ctx.registrations[0].options.inject()
     await face.refreshUsage('opencode-go')
     await face.refreshUsage('deepseek-official')
-    const state = face.hooks.codexCard.getSnapshot()
+    const state = face.hooks.quota.getSnapshot()
     assert.equal(state.routes.opencode.state, 'ready')
     assert.equal(state.routes.deepseek.state, 'ready')
     assert.equal(state.routes.opencode.usage.kind, 'windows')
@@ -600,7 +573,7 @@ describe('provider route state', () => {
       },
     })
     await Promise.all([first, second])
-    const state = face.hooks.codexCard.getSnapshot()
+    const state = face.hooks.quota.getSnapshot()
     assert.equal(state.routes.opencode.state, 'ready')
     assert.equal(state.routes.opencode.usage.windows[0].remainingPercent, 90)
   })
@@ -757,12 +730,12 @@ describe('provider route state', () => {
   })
 })
 
-describe('the card component', () => {
+describe('the chip component', () => {
   /**
-   * Enough React for a component that only reads state and builds elements.
-   * The card is one of the pieces AGENTS.md warns is captured but never
-   * called; calling it is the only way a rename inside it goes red here
-   * rather than in a browser.
+   * Enough React for a component that reads state and builds elements. The
+   * chip is one of the pieces AGENTS.md warns is captured but never called;
+   * calling it is the only way a rename inside it goes red here rather than in
+   * a browser.
    * @returns {object} the fake module the client module table hands over.
    */
   function fakeReact() {
@@ -776,43 +749,59 @@ describe('the card component', () => {
     }
   }
 
-  /** @param {object} slot - one per-route usage slot @returns {{text: string}} what the card renders. */
-  function renderCard(slot) {
-    const { exports } = materialize({ 'react': fakeReact(), '@deepseek-ai/dsh-client-ui-primitives': {} })
+  /**
+   * @param {object} slot - one per-route usage slot.
+   * @param {string|null} provider - the provider the session's directory reports.
+   * @returns {{text: string}} what the chip renders.
+   */
+  function renderChip(slot, provider = 'openai-codex') {
+    const { exports } = materialize({ react: fakeReact() })
     const ctx = fakeContext()
     exports.apply(ctx)
     const { component } = ctx.registrations[0]
+    const directory = {
+      getSnapshot: () => ({ current: provider === null ? null : { provider }, status: 'ready' }),
+      subscribe: () => () => {},
+      ensureLoaded: () => {},
+    }
     return flatten(component({
-      useCodexCard: select => select({ language: 'zh', routes: { codex: slot } }),
+      useQuota: select => select({ language: 'zh', routes: { codex: slot, opencode: slot, deepseek: slot } }),
+      modelDirectoryFor: () => directory,
+      sessionId: 'session-1',
+      loadUsage: () => Promise.resolve(),
       refreshUsage: () => {},
     }))
   }
 
-  test('the collapsed header carries the account numbers, not an editor', () => {
-    const rendered = renderCard({
-      usage: { kind: 'windows', windows: [{ id: '5h', usedPercent: 12, remainingPercent: 88 }], planType: 'plus' },
-      state: 'ready',
-      failure: undefined,
-      background: false,
-      generation: 1,
-    })
-    assert.match(rendered.text, /OpenAI Codex/u)
-    assert.match(rendered.text, /5h 12%/u, 'the badge reads the windows the Host answered')
-    assert.doesNotMatch(rendered.text, /保存|上下文长度/u, 'this card edits nothing')
+  const READY = {
+    usage: { kind: 'windows', windows: [{ id: '5h', usedPercent: 12, remainingPercent: 88 }], planType: 'plus' },
+    state: 'ready',
+    failure: undefined,
+    background: false,
+    generation: 1,
+  }
+
+  test('the capsule carries the account numbers of the session\'s provider', () => {
+    assert.match(renderChip(READY).text, /5h 12%/u)
   })
 
   test('a route with nothing read yet still renders, muted', () => {
-    const rendered = renderCard({ usage: undefined, state: 'loading', failure: undefined, background: false, generation: 0 })
+    const rendered = renderChip({ usage: undefined, state: 'loading', failure: undefined, background: false, generation: 0 })
     assert.match(rendered.text, /额度 …/u)
+  })
+
+  test('a provider this plugin does not answer for renders nothing at all', () => {
+    // Showing Codex numbers beside a GLM session would be worse than empty.
+    assert.equal(renderChip(READY, 'glm-5.3').text, '')
   })
 })
 
-describe('card copy', () => {
+describe('chip copy', () => {
   test('never shows the reader a name only this codebase knows', () => {
     const { TEXT } = materialize().exports
-    // Every string either surface can render: the card and the chip both build
-    // their text out of this table and nothing else.
-    const forbidden = /cordis|patch\.yml|settings\.yaml|realm|compaction-basic|seam|namespace|用户层|配置层|schema|modelOverrides|installSection/iu
+    // Every string the chip and its popover can render: they build their text
+    // out of this table and nothing else.
+    const forbidden = /cordis|patch\.yml|settings\.yaml|realm|compaction-basic|seam|namespace|用户层|配置层|schema|modelOverrides|installSection|插件配置/iu
     for (const language of Object.keys(TEXT)) {
       for (const [key, line] of Object.entries(TEXT[language])) {
         assert.doesNotMatch(line, forbidden, `card copy leaks an internal name at ${language}.${key}: ${line}`)

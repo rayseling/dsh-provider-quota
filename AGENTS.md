@@ -10,7 +10,7 @@
 
 | # | 规则 | 守它的 |
 |---|---|---|
-| [1](notes/postmortems/0001-settings-validate-runs-on-read.md) | `validate` 每次**读取**时也跑。里面**别查外部世界**（目录、环境变量、文件）——抛一次，整份 section 连同不相干的字段一起没 | 无：0.5.0 起本插件的 section 没有字段，也没有 `validate`。再加钩子时补一条 |
+| [1](notes/postmortems/0001-settings-validate-runs-on-read.md) | `validate` 每次**读取**时也跑。里面**别查外部世界**（目录、环境变量、文件）——抛一次，整份 section 连同不相干的字段一起没 | 无：0.6.0 起本插件不登记任何 section。哪天要登记，先补一条 |
 | [2](notes/postmortems/0002-property-accessor-without-inject.md) | 软读**没 inject 的服务**只能用 `ctx.get(name)`。`ctx.settings` 抛在同表达式的兜底**之前**，外层 `catch` 把它变成「没配置」 | `service-reads` 门 |
 | [5](notes/postmortems/0005-base-url-version-segment.md) | `OPENCODE_GO_BASE_URL` 是 **base**，后缀由 fetch 补，两边要在「`/v1` 归谁」上一致（目录本身不齐） | `test/usage.test.js` composition 那组 |
 | [6](notes/postmortems/0006-fabricated-class-name-in-the-instructions.md) | 文档里带反引号的符号名是一句「这是真的」的断言。不确定就别加反引号 | `doc-symbols` 门 |
@@ -65,7 +65,7 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 |---|---|
 | `src/` 任何行为 | `npm test` |
 | `src/client.js` | `npm test` + **真开一次 `dsh web` 看**；commit message 里写明「手动验证：dsh web，截图 `.shots/<名>.png`」 |
-| `src/index.js` / `src/credentials.js` | `npm test`，重点看 `test/settings.test.js` 和 `test/credentials.test.js`（启的是真 seam，不是桩） |
+| `src/index.js` / `src/credentials.js` | `npm test`，重点看 `test/host.test.js` 和 `test/credentials.test.js`（启的是真 seam，不是桩） |
 | 文档 | `npm test`；引 `packages/…` 要设 `DSH_HARNESS_ROOT`，否则文档门**报红**（查不了就说查不了） |
 | `scripts/check.mjs` | `npm test`，并且**把 bug 塞回去看它变红**再还原 |
 | `package.json` / `cordis.patch.yml` | `npm test` |
@@ -74,8 +74,8 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 
 不写出来，「全绿」就会被当成「全对」：
 
-- **`src/client.js` 的行为测试只到卡片折叠态。** 真渲染的只有 `windowsPanelElement` 和
-  `CodexCard`（假 React）；`SessionQuotaChip` 和弹层从不调用，换成 `throw` 照样全绿。
+- **`src/client.js` 的行为测试只到胶囊本体。** 真渲染的只有 `windowsPanelElement` 和
+  `SessionQuotaChip`（假 React）；弹层里的面板和余额那支从不调用，换成 `throw` 照样全绿。
   样式和真实 hook 行为只能人去看 `dsh web`。
 - **凭据记录的跨进程互斥没测过**：`modifyRecord` 的锁只在一个进程里跑过；`cordis.patch.yml` 只比字符串。
 - **`npm install` 装不起来**（未发布的传递 peer 会 404）。`deps` 管的是清单**诚实**，不是可安装性。

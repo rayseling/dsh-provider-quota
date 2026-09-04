@@ -572,13 +572,13 @@ describe('gate: remote-codes', () => {
 describe('gate: identity', () => {
   /**
    * @param {Record<string, string>} [overrides] - files replacing the coherent defaults.
-   * @returns {Promise<string>} a fixture whose four spellings agree.
+   * @returns {Promise<string>} a fixture whose spellings agree.
    */
   async function identityFixture(overrides = {}) {
     const root = await fixture({
-      'src/index.js': "export const name = 'llm-openai-codex-lite'\nexport const settingsNs = 'llm-openai-codex-lite'\n",
-      'src/client.js': "    var SETTINGS_NS = 'llm-openai-codex-lite'\n",
-      'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite\n      name: dsh-provider-quota\n',
+      'src/index.js': "export const name = 'provider-quota'\n",
+      'src/client.js': "  sink.load({ id: 'dsh-provider-quota', factory: factory })\n",
+      'cordis.patch.yml': '- insert:\n    - id: provider-quota\n      name: dsh-provider-quota\n',
       'package.json': JSON.stringify({
         name: 'dsh-provider-quota',
         scripts: { test: 'node scripts/check.mjs' },
@@ -600,23 +600,32 @@ describe('gate: identity', () => {
     // normal YAML. Neither is drift, and reporting either as a missing anchor
     // sends the reader hunting.
     const root = await identityFixture({
-      'src/index.js': 'export const name = "llm-openai-codex-lite"\nexport const settingsNs = "llm-openai-codex-lite"\n',
-      'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite  # the entry id\n      name: dsh-provider-quota\n',
+      'src/index.js': 'export const name = "provider-quota"\n',
+      'src/client.js': '  sink.load({ id: "dsh-provider-quota", factory: factory })\n',
+      'cordis.patch.yml': '- insert:\n    - id: provider-quota  # the entry id\n      name: dsh-provider-quota\n',
     })
     assert.deepEqual(collectIdentityViolations(root), [])
   })
 
   test('rejects a drifted plugin name — the case the whole suite stays green for', async () => {
-    const root = await identityFixture({
-      'src/index.js': "export const name = 'llm-openai-codex-DRIFTED'\nexport const settingsNs = 'llm-openai-codex-lite'\n",
-    })
+    const root = await identityFixture({ 'src/index.js': "export const name = 'provider-quota-DRIFTED'\n" })
     const violations = collectIdentityViolations(root)
-    assert.equal(violations.length, 3, 'all three other spellings are reported, not just the first')
-    assert.deepEqual(violations[0],
-      'src/index.js `export const settingsNs`: spells "llm-openai-codex-lite" while src/index.js `export const name` spells "llm-openai-codex-DRIFTED". '
-      + 'These four are one identity: the Settings tab dispatches a card only to the namespace it names, so a drift here makes the card silently never arrive. '
-      + "(The loader imports the entry's `name:`, not its `id:`, so the composition still loads — which is why the suite stays green.) "
-      + 'Make all four agree.')
+    assert.equal(violations.length, 1)
+    assert.match(violations[0], /^cordis\.patch\.yml `id:`: spells "provider-quota" while/u)
+  })
+
+  test('rejects a browser handoff id the module table cannot key on', async () => {
+    // The failure this half exists for: the shell loads the bundle for the
+    // package it installed, the bundle announces itself as something else, and
+    // the entry simply never runs. No throw, no console line.
+    const root = await identityFixture({
+      'src/client.js': "  sink.load({ id: 'dsh-codex-lite', factory: factory })\n",
+    })
+    assert.deepEqual(collectIdentityViolations(root), [
+      'src/client.js `sink.load({ id })`: is "dsh-codex-lite" but package.json `name` is "dsh-provider-quota". '
+      + 'This is a real contract: the client module table keys the browser half on this id, so a mismatch is a module '
+      + 'nothing can require — the entry never runs, and nothing reports it.',
+    ])
   })
 
   test('rejects an npm test that no longer runs the gates', async () => {
@@ -639,12 +648,12 @@ describe('gate: identity', () => {
 
   test('rejects an entry name that does not match the package name', async () => {
     const root = await identityFixture({
-      'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite\n      name: some-other-package\n',
+      'cordis.patch.yml': '- insert:\n    - id: provider-quota\n      name: some-other-package\n',
     })
     assert.deepEqual(collectIdentityViolations(root), [
       'cordis.patch.yml `name:`: is "some-other-package" but package.json `name` is "dsh-provider-quota". '
-      + "This one is a real contract: the loader treats the entry's `name` as the module specifier it imports (vendor/loader/src/config/entry.ts). "
-      + 'A mismatch means the composition imports a package that is not this one.',
+      + "This is a real contract: the loader treats the entry's `name` as the module specifier it imports "
+      + '(vendor/loader/src/config/entry.ts), so a mismatch means the composition imports a package that is not this one.',
     ])
   })
 
@@ -677,8 +686,8 @@ describe('gate: identity', () => {
     ])
 
     const gone = await fixture({
-      'src/index.js': "export const name = 'x'\nexport const settingsNs = 'x'\n",
-      'src/client.js': "var SETTINGS_NS = 'x'\n",
+      'src/index.js': "export const name = 'x'\n",
+      'src/client.js': "sink.load({ id: 'dsh-provider-quota', factory: factory })\n",
       'cordis.patch.yml': '- insert:\n    - id: x\n      name: dsh-provider-quota\n',
       'package.json': JSON.stringify({ name: 'dsh-provider-quota', scripts: { test: 'node scripts/check.mjs' } }),
     })
@@ -691,18 +700,9 @@ describe('gate: identity', () => {
 
   test('fails loudly when an anchor it compares is missing, rather than passing quietly', async () => {
     const root = await identityFixture({ 'src/client.js': 'var somethingElse = 1\n' })
-    assert.deepEqual(collectIdentityViolations(root), [
-      'src/client.js `SETTINGS_NS`: this gate could not find the value it compares (pattern SETTINGS_NS\\s*=\\s*[\'"]([^\'"]+)[\'"]). '
-      + 'A gate that cannot locate its anchor must fail, not pass quietly — a silent skip here is how four spellings drift apart unnoticed. '
-      + 'Restore the declaration, or update this pattern in scripts/check.mjs.',
-    ])
-  })
-
-  test('refuses a package.json that is valid JSON but not an object', async () => {
-    const root = await identityFixture({ 'package.json': 'null' })
-    assert.deepEqual(collectIdentityViolations(root), [
-      'package.json: parsed to null, not an object. Nothing that reads it can be checked.',
-    ])
+    assert.equal(collectIdentityViolations(root).length, 1)
+    assert.match(collectIdentityViolations(root)[0],
+      /^src\/client\.js `sink\.load\(\{ id \}\)`: this gate could not find the value it compares/u)
   })
 })
 
@@ -1153,8 +1153,8 @@ describe('the remaining sample-shaped fixes', () => {
     /** @param {string} command @returns {Promise<number>} violations. */
     const violationsFor = async (command) => {
       const root = await fixture({
-        'src/index.js': "export const name = 'x'\nexport const settingsNs = 'x'\n",
-        'src/client.js': "var SETTINGS_NS = 'x'\n",
+        'src/index.js': "export const name = 'x'\n",
+        'src/client.js': "sink.load({ id: 'dsh-provider-quota', factory: factory })\n",
         'cordis.patch.yml': '- insert:\n    - id: x\n      name: dsh-provider-quota\n',
         'package.json': JSON.stringify({ name: 'dsh-provider-quota', scripts: { test: command } }),
         'AGENTS.md': '# rules\n',

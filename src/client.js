@@ -1,19 +1,16 @@
 /**
- * dsh-provider-quota browser half: one card in Settings -> Plugins -> Plugin
- * configuration plus a session-header chip, both showing the host-normalized
- * account quota of the model route the session is on — Codex 5h/7d, OpenCode
- * Go 5h/7d/1m, or the DeepSeek balance.
+ * dsh-provider-quota browser half: one chip beside the session title, showing
+ * the host-normalized account quota of the model route the session is on —
+ * Codex 5h/7d, OpenCode Go 5h/7d/1m, or the DeepSeek balance — and a popover
+ * carrying the full panel.
  *
- * It edits nothing. The plugin's settings namespace holds no field; it exists
- * because the plugin-configuration tab dispatches a card only to a namespace
- * the Host serves, so the card needs one to be rendered under at all.
+ * It edits nothing and configures nothing, so it registers no Settings card:
+ * a card would have been the same panel, one click further away, behind a
+ * settings section that exists only to make it dispatchable.
  *
- * The harness ships no generic schema-form renderer — the package that once
- * held one is gone, and the plugin-configuration tab is a card registry keyed
- * by settings namespace, where a namespace no card claims renders nothing. So
- * this file is the card, hand-written as a classic script: no bundler, no JSX,
- * and the only modules it asks the client module table for are `react` and the
- * shipped UI primitives. Everything else it needs is a cordis service.
+ * Hand-written as a classic script: no bundler, no JSX, and the only module it
+ * asks the client module table for is `react`. Everything else it needs is a
+ * cordis service.
  *
  * Two failure modes here would take the whole web UI down with them, so both
  * are designed out rather than handled: the module declares no `inject`, and
@@ -34,14 +31,6 @@
    */
   function factory(require) {
     var React = require('react')
-    // The shipped primitives, so the card's disclosure chevron is the same
-    // glyph its neighbours use rather than an imitation of one.
-    var primitives = require('@deepseek-ai/dsh-client-ui-primitives')
-    var ChevronIcon = primitives.IconChevronDownOutline14
-
-    /** The settings namespace this card is dispatched under; must equal the host half's. */
-    var SETTINGS_NS = 'provider-quota'
-
     /** Trusted Harness Connection RPC carrying secret-free usage data. */
     var CODEX_USAGE_CHANNEL = '/dsh-provider-quota'
     var CODEX_USAGE_METHOD = 'usage'
@@ -88,10 +77,6 @@
     // word: two cards calling the same act two things would read as two acts.
     var TEXT = {
       zh: {
-        title: 'OpenAI Codex',
-        description: '查看当前模型路线的账号额度：Codex 5 小时 / 7 天、OpenCode Go、DeepSeek 余额。',
-        expand: '展开额度',
-        collapse: '收起额度',
         quotaBadge: '周已用 {used}%',
         windowsTitle: '额度',
         window5h: '5 小时',
@@ -117,10 +102,6 @@
         refreshing: '刷新中…',
       },
       en: {
-        title: 'OpenAI Codex',
-        description: 'Account usage for the route this session is on: Codex 5h/7d, OpenCode Go, DeepSeek balance.',
-        expand: 'Show usage',
-        collapse: 'Hide usage',
         quotaBadge: 'Weekly {used}% used',
         windowsTitle: 'Usage',
         window5h: '5h',
@@ -397,7 +378,7 @@
       this.usagePollTimer = undefined
       this.store = createStore(this.project())
       this.face = {
-        hooks: { codexCard: this.store },
+        hooks: { quota: this.store },
         refreshUsage: function (provider) { return self.loadUsage(provider === undefined ? 'openai-codex' : provider, true) },
         loadUsage: function (provider, force) { return self.loadUsage(provider, force === true) },
         modelDirectoryFor: function (sessionId) {
@@ -782,7 +763,7 @@
      */
     function SessionQuotaChip(props) {
       var h = React.createElement
-      var state = props.useCodexCard(function (snapshot) { return snapshot })
+      var state = props.useQuota(function (snapshot) { return snapshot })
       var directory = props.modelDirectoryFor(props.sessionId)
       var dir = directory === undefined ? EMPTY_DIRECTORY : directory
       // Both arguments have to be stable across renders, not just correct.
@@ -847,66 +828,13 @@
           : null)
     }
 
-    /**
-     * The Settings card: the Codex quota, and nothing to edit.
-     *
-     * It always renders. The old card returned null for a namespace this
-     * deployment did not serve, because a dead editor is worse than none —
-     * but this one displays a number the Host answers for, which does not
-     * depend on the section existing beyond being dispatched at all.
-     * @param {object} props - the injected face, with `hooks` bound to selectors.
-     * @returns {object} the card.
-     */
-    function CodexCard(props) {
-      var state = props.useCodexCard(function (snapshot) { return snapshot })
-      var disclosure = React.useState(false)
-      var isOpen = disclosure[0]
-      var setOpen = disclosure[1]
-      var text = TEXT[state.language]
-      var h = React.createElement
-      // The collapsed badge reads the same windows the session chip does, so
-      // an account with both windows shows both, and one with only the weekly
-      // allowance keeps the single-window copy.
-      var quotaBadge = quotaChipLabel(state.routes.codex, text)
-      return h('li', { className: isOpen ? 'dcl-card dcl-cardOpen' : 'dcl-card' },
-        h('button', {
-          type: 'button',
-          className: 'dcl-header',
-          'aria-expanded': isOpen,
-          'aria-label': (isOpen ? text.collapse : text.expand) + ': ' + text.title,
-          onClick: function () { setOpen(!isOpen) },
-        },
-        h('span', { className: 'dcl-headText' },
-          h('span', { className: 'dcl-name' }, text.title),
-          h('span', { className: 'dcl-description' }, text.description)),
-        h('span', { className: quotaChipReady(state.routes.codex) ? 'dcl-quotaBadge' : 'dcl-quotaBadge dcl-quotaBadgeMuted' }, quotaBadge),
-        React.createElement(ChevronIcon, { className: isOpen ? 'dcl-chevron dcl-chevronOpen' : 'dcl-chevron' })),
-        isOpen
-          ? h('div', { className: 'dcl-body' },
-            windowsPanelElement(state.routes.codex, text, function () { void props.refreshUsage() }, state.language))
-          : null)
-    }
-
-    // The shipped cards are CSS modules, which this shell injects as <style>
-    // tags at runtime — so a stylesheet is the native mechanism here, not a
-    // workaround, and it is what buys hover, focus and disabled states that
-    // inline styles cannot express. These rules mirror the shipped
-    // PluginCard/fields modules so this card is the same object as its
-    // neighbours rather than an approximation of one.
-    var STYLE_TAG_ID = 'dsh-provider-quota/card.css'
+    // The shipped surfaces are CSS modules, which this shell injects as
+    // <style> tags at runtime — so a stylesheet is the native mechanism here,
+    // not a workaround, and it is what buys the hover and focus states inline
+    // styles cannot express. These rules mirror the shipped modules so the
+    // chip is the same object as its neighbours rather than an imitation.
+    var STYLE_TAG_ID = 'dsh-provider-quota/chip.css'
     var CSS = [
-      '.dcl-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3);transition:border-color .16s,background .16s}',
-      '.dcl-card:hover{border-color:var(--dsw-alias-label-dimmed)}',
-      '.dcl-cardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
-      '.dcl-header{width:100%;appearance:none;border:0;background:none;font:inherit;color:inherit;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:12px}',
-      '.dcl-header:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
-      '.dcl-headText{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}',
-      '.dcl-name{font-size:15px;font-weight:600;line-height:1.4;color:var(--dsw-alias-label-primary)}',
-      '.dcl-description{font-size:13px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
-      '.dcl-chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
-      '.dcl-chevronOpen{transform:rotate(180deg)}',
-      '.dcl-quotaBadge{flex:none;border-radius:999px;padding:2px 9px;font-size:11px;line-height:17px;font-weight:600;white-space:nowrap;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-layer-3)}',
-      '.dcl-quotaBadgeMuted{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-tertiary)}',
       '.dcl-chipWrap{position:relative;display:inline-flex;flex:none}',
       '.dcl-chip{display:inline-flex;align-items:center;height:24px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-layer-3);font:inherit;font-size:11px;line-height:1;font-weight:600;white-space:nowrap;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:color .16s,border-color .16s}',
       '.dcl-chip:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}',
@@ -914,7 +842,6 @@
       '.dcl-chipMuted{color:var(--dsw-alias-label-tertiary)}',
       '.dcl-chipPopover{position:absolute;top:calc(100% + 8px);right:0;z-index:60;width:264px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-2);box-shadow:0 12px 32px rgba(0,0,0,.18)}',
       '.dcl-chipPopover .dcl-quota{margin:0;border:0;background:transparent}',
-      '.dcl-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}',
       '.dcl-quota{margin:12px 0 2px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3)}',
       '.dcl-quotaHead{display:flex;align-items:center;gap:8px;margin-bottom:10px}',
       '.dcl-quotaTitle{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
@@ -933,7 +860,7 @@
     ].join('')
 
 
-    /** Put the card's rules in the document once, the way a built bundle does. */
+    /** Put the chip's rules in the document once, the way a built bundle does. */
     function ensureStyles() {
       if (typeof document === 'undefined' || document.getElementById(STYLE_TAG_ID) !== null) return
       var tag = document.createElement('style')
@@ -944,7 +871,7 @@
     }
 
     /**
-     * Bind the two surfaces to the services they need, once they are present.
+     * Bind the chip to the services it needs, once they are present.
      * @param {object} ctx - the scoped browser context.
      */
     function mount(ctx) {
@@ -959,24 +886,15 @@
           controller.dispose()
           disposers.forEach(function (dispose) { dispose() })
         }
-      }, 'dsh-provider-quota: card sources')
+      }, 'dsh-provider-quota: chip sources')
       var tracker = new ModelTracker(modelDirectoriesOf(ctx))
       controller.modelDirectoryFor = function (sessionId) { return tracker.directoryFor(sessionId) }
       void controller.loadUsage('openai-codex', false).finally(function () {
         controller.scheduleCodexUsagePoll()
       })
-      ctx.slots.inject('settings.plugin.item', function () {
-        return ctx.slots.register({
-          name: 'settings.plugin.item',
-          key: SETTINGS_NS,
-          inject: function () { return controller.face },
-        }, CodexCard)
-      })
-      // The same controller answers the session-header chip: one usage store,
-      // one refresh, two surfaces. The slot is declared by the conversation
-      // shell; on a harness where it never is, inject simply never runs the
-      // callback — and if it does run and the registry refuses, the chip is
-      // what is lost, never the card above.
+      // The slot is declared by the conversation shell; on a harness where it
+      // never is, inject simply never runs the callback, and a registry that
+      // refuses the entry costs the chip rather than the page.
       ctx.slots.inject('conversation.session.header.utilities', function () {
         try {
           return ctx.slots.register({
@@ -1007,7 +925,7 @@
 
     /**
      * Entry point. Nothing here may throw: the browser boot fails the page for
-     * any entry that does, and a quota card is not worth that.
+     * any entry that does, and a quota chip is not worth that.
      * @param {object} ctx - the browser plugin context.
      */
     function apply(ctx) {
@@ -1016,7 +934,7 @@
           try {
             mount(scoped)
           } catch (error) {
-            console.error('[dsh-provider-quota] quota card unavailable:', error)
+            console.error('[dsh-provider-quota] quota chip unavailable:', error)
           }
         })
       } catch (error) {
@@ -1029,7 +947,6 @@
       // leaves this entry pending, and the boot sweep fails the page for it.
       inject: [],
       apply: apply,
-      SETTINGS_NS: SETTINGS_NS,
       PROVIDER_ROUTES: PROVIDER_ROUTES,
       TEXT: TEXT,
       readUsageResult: readUsageResult,

@@ -50,8 +50,8 @@ ls -l ~/.dsh/profiles/web/node_modules/dsh-provider-quota/src/client.js
 
 `test/client.test.js` 把 `src/client.js` 当经典脚本执行，断言模块表契约（handoff id、
 只 require `react` 和 `@deepseek-ai/dsh-client-ui-primitives`、`inject` 为空）、
-卡片和会话胶囊两处注册、三个 provider 槽各自独立的读取状态机、以及编辑/保存的纯函数。
-它**不** import `src/index.js`——那样会把 pi-ai 和设置层一起拖进来，裸检出里整个文件直接加载失败（不是 skip）。
-两边的 namespace 靠 `test/settings.test.js` 里的反向断言钉在一起，那份测试本来就需要 peer 依赖。
+会话胶囊的注册、三个 provider 槽各自独立的读取状态机、以及归一化与文案的纯函数。
+它**不** import `src/index.js`——那样会把 pi-ai 和凭据层一起拖进来，裸检出里整个文件直接加载失败（不是 skip）。
+包名和 handoff id 的一致由 `identity` 门盯着，不靠这份测试。
 
 真实渲染这一半跑不到，只能人去看 `dsh web`——见 `AGENTS.md` 的「门盖不到的地方」。

@@ -42,4 +42,4 @@ var settings = ctx.settings !== undefined ? ctx.settings : ctx.get('settings')
 
 这是五条坑里**唯一一条模式抓得住的**。但它只是一道语法围栏：
 `ctx['settings']`、`const c = ctx; c.settings` 都绕得过去。
-真正兜底的是 `test/settings.test.js` 里那两条断言「请求去了哪里」的测试。
+真正兜底的是 `test/host.test.js` 里那两条断言「请求去了哪里」的测试。
