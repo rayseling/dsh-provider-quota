@@ -80,7 +80,7 @@ const tokenBody = (refresh = 'rt_ROTATED') => JSON.stringify({
  * @returns {Promise<object>} the root context.
  */
 async function bootCredentials() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-codex-lite-credentials-'))
+  const home = await mkdtemp(join(tmpdir(), 'dsh-provider-quota-credentials-'))
   homes.push(home)
   const ctx = new cordis.Context()
   disposers.push(() => ctx.fiber.dispose())

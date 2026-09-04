@@ -117,7 +117,7 @@ describe('redactSecrets: what must survive', () => {
   })
 
   test('paths, model ids and plain prose', () => {
-    const message = 'dsh-codex-lite: /Users/x/.dsh/.openai-codex-auth.json is not valid JSON (model gpt-5.6-sol)'
+    const message = 'dsh-provider-quota: /Users/x/.dsh/.openai-codex-auth.json is not valid JSON (model gpt-5.6-sol)'
     assert.equal(redactSecrets(message), message)
   })
 })

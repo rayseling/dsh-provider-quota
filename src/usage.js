@@ -7,7 +7,7 @@
  * response is deliberately treated as an additive/private contract — unknown
  * fields are ignored and windows are classified by duration rather than by
  * their primary/secondary slot.
- * @module dsh-codex-lite/usage
+ * @module dsh-provider-quota/usage
  */
 
 /** OpenAI endpoint used by the current first-party Codex client. */
@@ -34,7 +34,7 @@ export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
 export const DEEPSEEK_PUBLIC_BASE_URL = 'https://api.deepseek.com'
 
 /** Harness Connection RPC channel and method consumed by the browser card. */
-export const OPENAI_CODEX_USAGE_CHANNEL = '/dsh-codex-lite'
+export const OPENAI_CODEX_USAGE_CHANNEL = '/dsh-provider-quota'
 export const OPENAI_CODEX_USAGE_METHOD = 'usage'
 const FIVE_HOUR_SECONDS = 5 * 60 * 60
 const WEEK_SECONDS = 7 * 24 * 60 * 60
@@ -220,7 +220,7 @@ export async function fetchOpenAICodexUsage(options) {
   const headers = {
     Accept: 'application/json',
     Authorization: `Bearer ${accessToken}`,
-    'User-Agent': 'dsh-codex-lite',
+    'User-Agent': 'dsh-provider-quota',
     ...(accountId === undefined ? {} : { 'ChatGPT-Account-Id': accountId }),
   }
   let response

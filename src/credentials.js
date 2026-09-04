@@ -20,7 +20,7 @@
  * package does not export. Copying it is what keeps the two writers writing
  * the same bytes; the copy is small, and the alternative — inventing a second
  * payload shape — is the failure it prevents.
- * @module dsh-codex-lite/credentials
+ * @module dsh-provider-quota/credentials
  */
 
 import { recordKeyFor } from '@deepseek-ai/dsh-llm-pi-ai'
@@ -126,7 +126,7 @@ export function createCodexCredentialStore(ctx) {
     const credentials = ctx.get('credentials')
     if (credentials === undefined || credentials === null) {
       throw new Error(
-        'dsh-codex-lite: this composition mounts no credentials service, so the Codex credential cannot be'
+        'dsh-provider-quota: this composition mounts no credentials service, so the Codex credential cannot be'
         + ' rotated; mount one (dsh-credentials-local) to keep the sign-in alive',
       )
     }
@@ -144,7 +144,7 @@ export function createCodexCredentialStore(ctx) {
     },
     async modify(providerId, mutate) {
       if (providerId !== OPENAI_CODEX_PROVIDER) {
-        throw new Error(`dsh-codex-lite: credential store does not own provider "${providerId}"`)
+        throw new Error(`dsh-provider-quota: credential store does not own provider "${providerId}"`)
       }
       const stored = await writable().modifyRecord(
         recordKeyFor(OPENAI_CODEX_PROVIDER),

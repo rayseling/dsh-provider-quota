@@ -59,7 +59,7 @@ after(() => Promise.all(roots.map(root => rm(root, { recursive: true, force: tru
  * @returns {Promise<string>} the fixture root.
  */
 async function fixture(files) {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-codex-lite-gate-'))
+  const root = await mkdtemp(join(tmpdir(), 'dsh-provider-quota-gate-'))
   roots.push(root)
   for (const [rel, content] of Object.entries(files)) {
     const full = join(root, rel)
@@ -70,7 +70,7 @@ async function fixture(files) {
 }
 
 /** A minimal package.json a fixture that only needs dependencies can start from. */
-const MANIFEST = JSON.stringify({ name: 'dsh-codex-lite', peerDependencies: { 'some-pkg': '*' } })
+const MANIFEST = JSON.stringify({ name: 'dsh-provider-quota', peerDependencies: { 'some-pkg': '*' } })
 
 // ---------------------------------------------------------------------------
 
@@ -578,9 +578,9 @@ describe('gate: identity', () => {
     const root = await fixture({
       'src/index.js': "export const name = 'llm-openai-codex-lite'\nexport const settingsNs = 'llm-openai-codex-lite'\n",
       'src/client.js': "    var SETTINGS_NS = 'llm-openai-codex-lite'\n",
-      'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite\n      name: dsh-codex-lite\n',
+      'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite\n      name: dsh-provider-quota\n',
       'package.json': JSON.stringify({
-        name: 'dsh-codex-lite',
+        name: 'dsh-provider-quota',
         scripts: { test: 'node scripts/check.mjs' },
         exports: { '.': './src/index.js' },
       }),
@@ -601,7 +601,7 @@ describe('gate: identity', () => {
     // sends the reader hunting.
     const root = await identityFixture({
       'src/index.js': 'export const name = "llm-openai-codex-lite"\nexport const settingsNs = "llm-openai-codex-lite"\n',
-      'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite  # the entry id\n      name: dsh-codex-lite\n',
+      'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite  # the entry id\n      name: dsh-provider-quota\n',
     })
     assert.deepEqual(collectIdentityViolations(root), [])
   })
@@ -624,7 +624,7 @@ describe('gate: identity', () => {
     // green suite. Nothing else in the system can see this.
     const root = await identityFixture({
       'package.json': JSON.stringify({
-        name: 'dsh-codex-lite',
+        name: 'dsh-provider-quota',
         scripts: { test: 'node --test' },
         exports: { '.': './src/index.js' },
       }),
@@ -642,7 +642,7 @@ describe('gate: identity', () => {
       'cordis.patch.yml': '- insert:\n    - id: llm-openai-codex-lite\n      name: some-other-package\n',
     })
     assert.deepEqual(collectIdentityViolations(root), [
-      'cordis.patch.yml `name:`: is "some-other-package" but package.json `name` is "dsh-codex-lite". '
+      'cordis.patch.yml `name:`: is "some-other-package" but package.json `name` is "dsh-provider-quota". '
       + "This one is a real contract: the loader treats the entry's `name` as the module specifier it imports (vendor/loader/src/config/entry.ts). "
       + 'A mismatch means the composition imports a package that is not this one.',
     ])
@@ -651,7 +651,7 @@ describe('gate: identity', () => {
   test('walks conditional exports and does not iterate a bare string as characters', async () => {
     const conditional = await identityFixture({
       'package.json': JSON.stringify({
-        name: 'dsh-codex-lite',
+        name: 'dsh-provider-quota',
         scripts: { test: 'node scripts/check.mjs' },
         exports: { '.': { import: './src/does-not-exist.js' } },
       }),
@@ -660,7 +660,7 @@ describe('gate: identity', () => {
 
     const bare = await identityFixture({
       'package.json': JSON.stringify({
-        name: 'dsh-codex-lite',
+        name: 'dsh-provider-quota',
         scripts: { test: 'node scripts/check.mjs' },
         exports: './src/index.js',
       }),
@@ -679,8 +679,8 @@ describe('gate: identity', () => {
     const gone = await fixture({
       'src/index.js': "export const name = 'x'\nexport const settingsNs = 'x'\n",
       'src/client.js': "var SETTINGS_NS = 'x'\n",
-      'cordis.patch.yml': '- insert:\n    - id: x\n      name: dsh-codex-lite\n',
-      'package.json': JSON.stringify({ name: 'dsh-codex-lite', scripts: { test: 'node scripts/check.mjs' } }),
+      'cordis.patch.yml': '- insert:\n    - id: x\n      name: dsh-provider-quota\n',
+      'package.json': JSON.stringify({ name: 'dsh-provider-quota', scripts: { test: 'node scripts/check.mjs' } }),
     })
     assert.deepEqual(collectIdentityViolations(gone), [
       'CLAUDE.md: is missing. '
@@ -1155,8 +1155,8 @@ describe('the remaining sample-shaped fixes', () => {
       const root = await fixture({
         'src/index.js': "export const name = 'x'\nexport const settingsNs = 'x'\n",
         'src/client.js': "var SETTINGS_NS = 'x'\n",
-        'cordis.patch.yml': '- insert:\n    - id: x\n      name: dsh-codex-lite\n',
-        'package.json': JSON.stringify({ name: 'dsh-codex-lite', scripts: { test: command } }),
+        'cordis.patch.yml': '- insert:\n    - id: x\n      name: dsh-provider-quota\n',
+        'package.json': JSON.stringify({ name: 'dsh-provider-quota', scripts: { test: command } }),
         'AGENTS.md': '# rules\n',
       })
       await symlink('AGENTS.md', join(root, 'CLAUDE.md'))

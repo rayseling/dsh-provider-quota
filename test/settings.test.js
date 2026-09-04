@@ -38,7 +38,7 @@ after(async () => {
 
 /** @returns {Promise<string>} a tracked, empty harness home. */
 async function freshHome() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-codex-lite-settings-'))
+  const home = await mkdtemp(join(tmpdir(), 'dsh-provider-quota-settings-'))
   homes.push(home)
   return home
 }
@@ -87,7 +87,7 @@ describe('the plugin namespace', { skip }, () => {
     // suite needs no peer dependencies. This is the other end of that pact:
     // the card registers under the name asserted here, and a rename that
     // touched only one half would fail here rather than in a browser.
-    assert.equal(plugin.settingsNs, 'codex-quota')
+    assert.equal(plugin.settingsNs, 'provider-quota')
   })
 
   test('without a settings provider the quota still answers, only the card is lost', async () => {
@@ -97,7 +97,7 @@ describe('the plugin namespace', { skip }, () => {
     const home = await freshHome()
     const rpc = captureRpc()
     await boot(home, { settings: false, connection: rpc.connection })
-    assert.equal(rpc.handler()?.channel, '/dsh-codex-lite')
+    assert.equal(rpc.handler()?.channel, '/dsh-provider-quota')
   })
 })
 
@@ -115,7 +115,7 @@ describe('where the quota is reachable from', { skip }, () => {
     const rpc = captureRpc()
     const webServer = { register: (path) => { mountedRoutes.push(path) } }
     await boot(home, { connection: rpc.connection, webServer })
-    assert.equal(rpc.handler().channel, '/dsh-codex-lite')
+    assert.equal(rpc.handler().channel, '/dsh-provider-quota')
     assert.equal(typeof rpc.handler().handler, 'function')
     assert.deepEqual(mountedRoutes, [], 'a raw HTTP route would answer outside the Connection fence')
   })

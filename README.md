@@ -1,4 +1,4 @@
-# dsh-codex-lite
+# dsh-provider-quota
 
 在 DeepSeek Harness 的会话里显示**当前模型所属账户**还剩多少 —— Codex 的 5h/7d、OpenCode Go 的 5h/7d/1m、DeepSeek 余额。只做这一件事。
 
@@ -19,7 +19,7 @@
 需要 **dsh 0.1.2-alpha.1 或更新**：凭据记录（`recordKeyFor`、`modifyRecord`）和 Connection 的浏览器会话认证是这个版本定的；设置 section 的 service API 在 alpha.2 定型，卡片要靠它才能被派发。
 
 ```sh
-dsh plugin --profile web add file:/你克隆到的路径/dsh-codex-lite
+dsh plugin --profile web add file:/path/to/dsh-provider-quota
 ```
 
 ## 配置 Codex 模型（宿主原生）
@@ -60,7 +60,7 @@ records:
       accountId: <ChatGPT account id>
 ```
 
-`payload` 就是 pi-ai 的 OAuth 凭据对象，可以来自任何一次 pi-ai `openai-codex` 登录——例如本插件 0.5.0 之前的 `dsh plugin --profile web exec dsh-codex-lite login` 写下的 `$DSH_HOME/.openai-codex-auth.json`，那个文件里的 `credential` 对象原样搬过来即可。`expires` 是毫秒时间戳。
+`payload` 就是 pi-ai 的 OAuth 凭据对象，可以来自任何一次 pi-ai `openai-codex` 登录——例如本插件 0.5.0 之前的 `dsh plugin --profile web exec dsh-provider-quota login` 写下的 `$DSH_HOME/.openai-codex-auth.json`，那个文件里的 `credential` 对象原样搬过来即可。`expires` 是毫秒时间戳。
 
 **refresh token 用一次就轮换**，所以这份凭据只能存在一处。宿主刷新过一次之后，任何别处的副本（旧的 `.openai-codex-auth.json`、另一台机器上的拷贝）立刻失效。别留副本，也别指望回滚。
 
@@ -88,7 +88,7 @@ records:
 | `opencode-go` / `opencode-go-extra` | `GET {该路由实际 baseURL}/usage`（未公开接口，cc-switch#6433 发现） | 该路由配置的 `apiKeyEnv`（默认 `OPENCODE_GO_API_KEY`），回退 `llm-pi-ai` 存储的 API key 记录，再回退 OpenCode CLI 的 `auth.json`；同时携带 Bearer 与 `x-api-key` |
 | `deepseek-official` / `deepseek` | `GET {该路由实际 baseURL}/user/balance`（官方接口） | 该路由配置的 `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`），经 credentials seam 解析 |
 
-两个百分比上游给的都是「已用」，原样显示，旁边的剩余是 100 减出来的；DeepSeek 金额保持 API 返回的十进制字符串，不做浮点换算。浏览器通过 Harness Connection RPC 的 `/dsh-codex-lite` channel 拿到标准化结果；Connection 会先校验 Host / Origin / Fetch-Site 和浏览器会话。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
+两个百分比上游给的都是「已用」，原样显示，旁边的剩余是 100 减出来的；DeepSeek 金额保持 API 返回的十进制字符串，不做浮点换算。浏览器通过 Harness Connection RPC 的 `/dsh-provider-quota` channel 拿到标准化结果；Connection 会先校验 Host / Origin / Fetch-Site 和浏览器会话。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
 
 Codex 与 OpenCode 的接口都是未公开契约：上游改动时面板会说「没能读取额度」，不影响模型请求；点「刷新」可以重试。若上游本来就没给这个账户返回额度窗口，面板说明的是这件事，而不是一句「重试」——重试改变不了它。
 
@@ -98,7 +98,7 @@ Codex 与 OpenCode 的接口都是未公开契约：上游改动时面板会说�
 
 ### 卡片不见了
 
-插件配置页渲染的是**两份名单的交集**：宿主服务的 settings namespace，和注册到该 namespace 下的卡片。所以卡片要出现，本插件的 `codex-quota` section 必须登记成功。它没有任何字段，登记就是它的全部作用。
+插件配置页渲染的是**两份名单的交集**：宿主服务的 settings namespace，和注册到该 namespace 下的卡片。所以卡片要出现，本插件的 `provider-quota` section 必须登记成功。它没有任何字段，登记就是它的全部作用。
 
 登记只在启动时发生一次，所以改完配置要**重启 dsh**。胶囊不受影响：它不经过 settings。
 
@@ -122,7 +122,7 @@ ps -p "$(cat "$LOCK")" || rm -f "$LOCK"        # 进程还在就别删
 ## 卸载
 
 ```sh
-dsh plugin --profile web remove dsh-codex-lite
+dsh plugin --profile web remove dsh-provider-quota
 ```
 
 凭据记录归 `llm-pi-ai` 管，卸载本插件不动它。

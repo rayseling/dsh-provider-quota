@@ -13,7 +13,7 @@
  * Rotation is committed inside that same `modify`, to the record the native
  * `llm-pi-ai` route reads, so a refresh started here and a request served there
  * never end up holding two halves of one rotated grant.
- * @module dsh-codex-lite/token
+ * @module dsh-provider-quota/token
  */
 
 import { createModels } from '@earendil-works/pi-ai'
@@ -66,7 +66,7 @@ function withDeadline(promise, timeoutMs, onTimeout) {
 }
 
 /** Marker carried by {@link boundedRefreshProvider}'s deadline failure. */
-const REFRESH_TIMEOUT_MARKER = 'dsh-codex-lite: OpenAI Codex token refresh did not answer'
+const REFRESH_TIMEOUT_MARKER = 'dsh-provider-quota: OpenAI Codex token refresh did not answer'
 
 /**
  * pi-ai's own wording for a refresh whose `fetch` never produced a response —
@@ -203,7 +203,7 @@ export function createOpenAICodexAccessResolver(store) {
     if (apiKey === undefined || apiKey.length === 0) {
       throw new LlmError(
         'OpenAI Codex is not signed in: no grant record is stored at llm-pi-ai/openai-codex'
-        + ' (see the sign-in section of the dsh-codex-lite README)',
+        + ' (see the sign-in section of the dsh-provider-quota README)',
         'MISSING_CREDENTIAL',
       )
     }

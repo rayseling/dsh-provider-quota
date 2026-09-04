@@ -10,7 +10,7 @@
  * shape: an opaque refresh token is indistinguishable from an id, and a rule
  * that only knows today's field names re-leaks the moment the provider adds
  * one.
- * @module dsh-codex-lite/redact
+ * @module dsh-provider-quota/redact
  */
 
 /** Three-segment JWT, the shape of the Codex access token. */

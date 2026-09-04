@@ -23,7 +23,7 @@ import { readFile } from 'node:fs/promises'
 import { describe, test } from 'node:test'
 
 /** The namespace both halves must spell identically; see the note above. */
-const settingsNs = 'codex-quota'
+const settingsNs = 'provider-quota'
 
 const source = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
 
@@ -129,7 +129,7 @@ function fakeContext(overrides = {}) {
 describe('module table contract', () => {
   test('registers under the loader entry name', () => {
     const handoff = load()
-    assert.equal(handoff.id, 'dsh-codex-lite', 'the id must be the package name the loader graph keys on')
+    assert.equal(handoff.id, 'dsh-provider-quota', 'the id must be the package name the loader graph keys on')
     assert.equal(typeof handoff.factory, 'function')
   })
 
@@ -198,7 +198,7 @@ describe('activation', () => {
     exports.apply(ctx)
     const chip = ctx.registrations[1]
     assert.equal(chip.options.name, 'conversation.session.header.utilities')
-    assert.equal(chip.options.id, 'dsh-codex-lite-usage')
+    assert.equal(chip.options.id, 'dsh-provider-quota-chip')
     assert.equal(typeof chip.options.inject, 'function')
     assert.equal(typeof chip.component, 'function')
     const cardFace = ctx.registrations[0].options.inject()
@@ -330,7 +330,7 @@ describe('usage card state', () => {
     assert.deepEqual(state.routes.codex.usage, result.value)
     const usageCall = calls.find(call => call.method === 'usage')
     assert.deepEqual(usageCall, {
-      channel: '/dsh-codex-lite',
+      channel: '/dsh-provider-quota',
       method: 'usage',
       payload: { provider: 'openai-codex', force: false },
       signal: usageCall.signal,
@@ -821,7 +821,7 @@ describe('card copy', () => {
   })
 
   test('the sign-in copy sends the reader somewhere that exists', () => {
-    // The command it used to name — `dsh plugin … exec dsh-codex-lite login` —
+    // The command it used to name — `dsh plugin … exec dsh-provider-quota login` —
     // was deleted with the adapter. Copy that still named it would send the
     // reader to a command that answers "unknown".
     const { TEXT } = materialize().exports

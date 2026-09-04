@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsh-codex-lite gates: nine independent collectors plus a runner.
+ * dsh-provider-quota gates: nine independent collectors plus a runner.
  *
  * `npm test` runs this, not `node --test` — see AGENTS.md. The suite alone
  * cannot be the gate, because a checkout without the peer dependencies
@@ -31,7 +31,7 @@
  * is the whole scheduler. Revisit if a gate crosses ten seconds or grows a
  * real dependency edge.
  *
- * @module dsh-codex-lite/scripts/check
+ * @module dsh-provider-quota/scripts/check
  */
 
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs'

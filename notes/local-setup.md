@@ -10,15 +10,15 @@
 得先把那份拷贝删掉：
 
 ```sh
-rm -rf ~/.dsh/profiles/web/node_modules/dsh-codex-lite
-dsh plugin --profile web add file:/path/to/dsh-codex-lite
+rm -rf ~/.dsh/profiles/web/node_modules/dsh-provider-quota
+dsh plugin --profile web add file:/path/to/dsh-provider-quota
 ```
 
 迭代期更省事的是 `link:` 代替 `file:`，装成符号链接，源码即所得：
 
 ```sh
-rm -rf ~/.dsh/profiles/web/node_modules/dsh-codex-lite
-dsh plugin --profile web add link:/path/to/dsh-codex-lite
+rm -rf ~/.dsh/profiles/web/node_modules/dsh-provider-quota
+dsh plugin --profile web add link:/path/to/dsh-provider-quota
 ```
 
 ## 客户端热更
@@ -43,7 +43,7 @@ ln -s ~/.dsh/profiles/node_modules node_modules
 声明了却找不到文件会让 `dsh web` 直接起不来。装完、重启前先确认：
 
 ```sh
-ls -l ~/.dsh/profiles/web/node_modules/dsh-codex-lite/src/client.js
+ls -l ~/.dsh/profiles/web/node_modules/dsh-provider-quota/src/client.js
 ```
 
 ## 浏览器那半边为什么单独测

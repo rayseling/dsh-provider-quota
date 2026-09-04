@@ -1,5 +1,5 @@
 /**
- * dsh-codex-lite browser half: one card in Settings -> Plugins -> Plugin
+ * dsh-provider-quota browser half: one card in Settings -> Plugins -> Plugin
  * configuration plus a session-header chip, both showing the host-normalized
  * account quota of the model route the session is on — Codex 5h/7d, OpenCode
  * Go 5h/7d/1m, or the DeepSeek balance.
@@ -26,7 +26,7 @@
 ;(function () {
   var sink = typeof window === 'undefined' ? undefined : window.__ModuleLoader__
   if (sink === undefined || typeof sink.load !== 'function') return
-  sink.load({ id: 'dsh-codex-lite', factory: factory })
+  sink.load({ id: 'dsh-provider-quota', factory: factory })
 
   /**
    * @param {(specifier: string) => any} require - the client module table.
@@ -40,10 +40,10 @@
     var ChevronIcon = primitives.IconChevronDownOutline14
 
     /** The settings namespace this card is dispatched under; must equal the host half's. */
-    var SETTINGS_NS = 'codex-quota'
+    var SETTINGS_NS = 'provider-quota'
 
     /** Trusted Harness Connection RPC carrying secret-free usage data. */
-    var CODEX_USAGE_CHANNEL = '/dsh-codex-lite'
+    var CODEX_USAGE_CHANNEL = '/dsh-provider-quota'
     var CODEX_USAGE_METHOD = 'usage'
     // Host worst case is 20s credential resolution plus a 15s usage fetch.
     var CODEX_USAGE_TIMEOUT_MS = 40_000
@@ -359,7 +359,7 @@
           if (next === snapshot) return
           snapshot = next
           listeners.slice().forEach(function (listener) {
-            try { listener() } catch (error) { console.error('[dsh-codex-lite] listener failed:', error) }
+            try { listener() } catch (error) { console.error('[dsh-provider-quota] listener failed:', error) }
           })
         },
       }
@@ -893,7 +893,7 @@
     // inline styles cannot express. These rules mirror the shipped
     // PluginCard/fields modules so this card is the same object as its
     // neighbours rather than an approximation of one.
-    var STYLE_TAG_ID = 'dsh-codex-lite/card.css'
+    var STYLE_TAG_ID = 'dsh-provider-quota/card.css'
     var CSS = [
       '.dcl-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3);transition:border-color .16s,background .16s}',
       '.dcl-card:hover{border-color:var(--dsw-alias-label-dimmed)}',
@@ -938,7 +938,7 @@
       if (typeof document === 'undefined' || document.getElementById(STYLE_TAG_ID) !== null) return
       var tag = document.createElement('style')
       tag.id = STYLE_TAG_ID
-      tag.dataset.plugin = 'dsh-codex-lite'
+      tag.dataset.plugin = 'dsh-provider-quota'
       tag.textContent = CSS
       document.head.appendChild(tag)
     }
@@ -959,7 +959,7 @@
           controller.dispose()
           disposers.forEach(function (dispose) { dispose() })
         }
-      }, 'dsh-codex-lite: card sources')
+      }, 'dsh-provider-quota: card sources')
       var tracker = new ModelTracker(modelDirectoriesOf(ctx))
       controller.modelDirectoryFor = function (sessionId) { return tracker.directoryFor(sessionId) }
       void controller.loadUsage('openai-codex', false).finally(function () {
@@ -981,12 +981,12 @@
         try {
           return ctx.slots.register({
             name: 'conversation.session.header.utilities',
-            id: 'dsh-codex-lite-usage',
+            id: 'dsh-provider-quota-chip',
             order: 100,
             inject: function () { return controller.face },
           }, SessionQuotaChip)
         } catch (error) {
-          console.error('[dsh-codex-lite] session quota chip unavailable:', error)
+          console.error('[dsh-provider-quota] session quota chip unavailable:', error)
         }
       })
     }
@@ -1016,11 +1016,11 @@
           try {
             mount(scoped)
           } catch (error) {
-            console.error('[dsh-codex-lite] quota card unavailable:', error)
+            console.error('[dsh-provider-quota] quota card unavailable:', error)
           }
         })
       } catch (error) {
-        console.error('[dsh-codex-lite] client plugin failed to apply:', error)
+        console.error('[dsh-provider-quota] client plugin failed to apply:', error)
       }
     }
 

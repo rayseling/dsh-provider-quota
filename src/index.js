@@ -1,5 +1,5 @@
 /**
- * dsh-codex-lite — the account-quota surface for the model routes a Harness
+ * dsh-provider-quota — the account-quota surface for the model routes a Harness
  * composition already serves, and nothing else.
  *
  * It registers one read-only Connection RPC that answers the account-level
@@ -19,7 +19,7 @@
  * The Codex credential is read through the harness credential plane at the
  * record `llm-pi-ai` itself writes, so the quota read and the model requests
  * share one grant and one refresh (see `./credentials.js`).
- * @module dsh-codex-lite
+ * @module dsh-provider-quota
  */
 
 import z from '@deepseek-ai/schemastery'
@@ -59,7 +59,7 @@ export {
 } from './usage.js'
 
 /** Stable Cordis plugin name. */
-export const name = 'codex-quota'
+export const name = 'provider-quota'
 
 /**
  * No service is required, and saying so is not a formality.
@@ -80,7 +80,7 @@ export const inject = []
  * the browser card registers under — the Settings tab dispatches a card only
  * to the namespace it names, so both halves must spell this the same way.
  */
-export const settingsNs = 'codex-quota'
+export const settingsNs = 'provider-quota'
 
 /**
  * The section this plugin serves: nothing.
@@ -274,7 +274,7 @@ export function apply(ctx) {
       // quota readable. Losing it costs the Settings card while the chip and
       // the RPC keep working, which is worth saying out loud rather than
       // failing a fiber that is otherwise healthy.
-      ctx.logger.error('dsh-codex-lite: settings namespace unavailable; the Settings card cannot be dispatched')
+      ctx.logger.error('dsh-provider-quota: settings namespace unavailable; the Settings card cannot be dispatched')
       ctx.logger.error(error)
     }
   })
