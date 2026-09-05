@@ -49,19 +49,21 @@
     // The provider routes this chip answers for, mapped to the PANEL each one
     // renders in.
     //
-    // A shape, not a state key. `opencode-go` and `opencode-go-extra` draw the
-    // same three windows but are two accounts, and so are the two DeepSeek
-    // routes; the second of each pair exists to be a second account. Keying
-    // the controller's state by this instead of by the provider is what let a
-    // session switched from one to the other keep showing the first one's
-    // numbers: the shared slot was already loaded, so the chip's effect below
-    // saw a non-idle slot and re-read nothing.
+    // A shape, not a state key. `openai-codex` and `opencode-go` both draw
+    // windows and are two different accounts; key the controller's state by
+    // this and they share one slot, which the chip's effect below then finds
+    // already loaded and re-reads nothing into. Whichever account was read
+    // first would answer for both, on the header, with nothing failing.
+    //
+    // Every id here is one something upstream fixed — the first two from
+    // pi-ai's catalog, the third the constant llm-deepseek registers under.
+    // A route id from `llm-pi-ai.providers` is a dict key the operator chose,
+    // and two such names lived here until the settings.yaml they were copied
+    // from stopped having them.
     var PROVIDER_ROUTES = {
       'openai-codex': 'windows',
       'opencode-go': 'windows',
-      'opencode-go-extra': 'windows',
       'deepseek-official': 'balance',
-      'deepseek': 'balance',
     }
 
     // One state slot per provider, so no two accounts ever share one.
@@ -808,9 +810,9 @@
       var loadUsage = props.loadUsage
       // Codex loads at mount; every other provider loads the first time a
       // session actually selects it. Its own slot is what makes that first
-      // time arrive: with one slot per family, selecting the second account of
-      // a family found the first account's slot already `ready` and read
-      // nothing, so the chip kept showing numbers belonging to the other one.
+      // time arrive: sharing one with a provider that draws the same panel,
+      // this would find a slot already `ready` and read nothing, leaving the
+      // other account's numbers on the header.
       React.useEffect(function () {
         if (shape === undefined || routeState === undefined) return undefined
         if (routeState.state !== 'idle') return undefined

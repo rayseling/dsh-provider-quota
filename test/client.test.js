@@ -488,12 +488,12 @@ describe('usage card state', () => {
 })
 
 describe('provider route state', () => {
-  test('the two accounts of one provider family keep separate numbers', async () => {
-    // `opencode-go` and `opencode-go-extra` render the same three windows, so
-    // it is tempting to give them one state slot. They are two accounts: one
-    // slot means whichever loaded first answers for both. Asserting the
-    // mapping object would only prove it was copied correctly out of src, so
-    // this reads both accounts and pins that each kept its own number.
+  test('two accounts that draw the same panel keep separate numbers', async () => {
+    // `openai-codex` and `opencode-go` both render windows, so it is tempting
+    // to give them one state slot. They are two accounts: one slot means
+    // whichever loaded first answers for both. Asserting the mapping object
+    // would only prove it was copied correctly out of src, so this reads both
+    // and pins that each kept its own number.
     const { exports } = materialize()
     const ctx = fakeContext()
     ctx.connection.rpc.call = async (_channel, _method, payload) => ({
@@ -501,20 +501,26 @@ describe('provider route state', () => {
       value: {
         kind: 'windows',
         provider: payload.provider,
-        windows: [{ id: '5h', usedPercent: payload.provider === 'opencode-go' ? 11 : 77, remainingPercent: 1 }],
+        windows: [{ id: '5h', usedPercent: payload.provider === 'openai-codex' ? 11 : 77, remainingPercent: 1 }],
         fetchedAt: '2026-08-20T12:00:00.000Z',
       },
     })
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
+    await face.refreshUsage('openai-codex')
     await face.refreshUsage('opencode-go')
-    await face.refreshUsage('opencode-go-extra')
     const state = face.hooks.quota.getSnapshot()
-    assert.equal(state.routes['opencode-go'].usage.windows[0].usedPercent, 11)
-    assert.equal(state.routes['opencode-go-extra'].usage.windows[0].usedPercent, 77)
+    assert.equal(state.routes['openai-codex'].usage.windows[0].usedPercent, 11)
+    assert.equal(state.routes['opencode-go'].usage.windows[0].usedPercent, 77)
   })
 
-  test('a provider this plugin does not answer for gets no slot and costs no read', async () => {
+  test('the chip answers for three fixed route ids and reads nothing for any other', async () => {
+    // The three are names something upstream fixed. The two that were removed
+    // — `opencode-go-extra` and `deepseek` — were `llm-pi-ai.providers` dict
+    // keys one deployment happened to choose, copied in and left behind when
+    // that settings.yaml changed. Re-adding a name of that kind should have to
+    // pass this line, and an id this plugin does not answer for must cost no
+    // request at all rather than one that fails.
     const { exports } = materialize()
     const ctx = fakeContext()
     const calls = []
@@ -524,9 +530,13 @@ describe('provider route state', () => {
     }
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
-    await face.loadUsage('glm-5.3', false)
-    assert.equal(face.hooks.quota.getSnapshot().routes['glm-5.3'], undefined)
-    assert.equal(calls.includes('glm-5.3'), false, 'an unanswerable provider must not reach the host')
+    for (const id of ['glm-5.3', 'opencode-go-extra', 'deepseek']) {
+      await face.loadUsage(id, false)
+      assert.equal(face.hooks.quota.getSnapshot().routes[id], undefined, id)
+      assert.equal(calls.includes(id), false, `${id} must not reach the host`)
+    }
+    assert.deepEqual(Object.keys(face.hooks.quota.getSnapshot().routes).sort(),
+      ['deepseek-official', 'openai-codex', 'opencode-go'])
   })
 
   test('each provider slot loads independently and keeps its own data', async () => {
@@ -804,7 +814,7 @@ describe('the chip component', () => {
       ensureLoaded: () => {},
     }
     const routes = {}
-    for (const id of ['openai-codex', 'opencode-go', 'opencode-go-extra', 'deepseek-official', 'deepseek']) routes[id] = slot
+    for (const id of ['openai-codex', 'opencode-go', 'deepseek-official']) routes[id] = slot
     const tree = component({
       useQuota: select => select({ language: 'zh', routes: routes }),
       modelDirectoryFor: () => directory,
@@ -838,13 +848,14 @@ describe('the chip component', () => {
     assert.equal(renderChip(READY, 'glm-5.3').text, '')
   })
 
-  test('switching to the other account of a family reads it instead of reusing the first', async () => {
+  test('switching to another account that draws the same panel reads it, not the first', async () => {
     // The regression the per-provider slots exist for, driven through the real
-    // controller because the bug lived between the two: both routes draw the
-    // same panel, so a slot keyed by panel shape was already `ready` when the
-    // session moved to the second account. The chip's effect saw a non-idle
-    // slot, read nothing, and the header kept the first account's number
-    // beside the second account's session — with no failure anywhere.
+    // controller because the bug lived between the two: `openai-codex` and
+    // `opencode-go` both draw windows, so a slot keyed by panel shape was
+    // already `ready` — Codex loads it at mount — by the time a session
+    // selected the other one. The chip's effect saw a non-idle slot, read
+    // nothing, and the header kept Codex's numbers beside an OpenCode
+    // session — with no failure anywhere.
     const effects = []
     const { exports } = materialize({ react: fakeReact(effects) })
     const ctx = fakeContext()
@@ -889,12 +900,15 @@ describe('the chip component', () => {
       await new Promise(resolve => { setTimeout(resolve, 0) })
       return flatten(tree).text
     }
+    // Codex is read at mount, so under one shared windows slot it is already
+    // `ready` before this session's own provider is ever painted — and the
+    // first assertion is the one that goes red.
     await paint()
-    assert.match(await paint(), /5h 11%/u, 'the account the session is actually on')
-    onScreen = 'opencode-go-extra'
+    assert.match(await paint(), /5h 11%/u, 'the account the session is actually on, not the one loaded at mount')
+    onScreen = 'openai-codex'
     await paint()
-    assert.match(await paint(), /5h 77%/u, 'the second account must be read, not the first one reused')
-    assert.ok(asked.includes('opencode-go-extra'), 'the host was never asked about the provider on screen')
+    assert.match(await paint(), /5h 77%/u, 'switching accounts must re-read, not reuse the other slot')
+    assert.deepEqual([...new Set(asked)].sort(), ['openai-codex', 'opencode-go'])
   })
 })
 

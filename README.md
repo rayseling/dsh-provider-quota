@@ -72,9 +72,11 @@ records:
 
 - 胶囊按当前 provider 显示：
   - `openai-codex` → `5h 10% · 7d 20%`（滚动 5 小时与 7 天两个窗口的**已用**比例）
-  - `opencode-go` / `opencode-go-extra` → `5h 10% · 7d 20% · 1m 30%`（三个窗口的**已用**比例）
-  - `deepseek-official` / `deepseek` → `余额 ¥110.00`（官方账户余额）
+  - `opencode-go` → `5h 10% · 7d 20% · 1m 30%`（三个窗口的**已用**比例）
+  - `deepseek-official` → `余额 ¥110.00`（官方账户余额）
   - 其他 provider 或空白新会话：不显示，绝不把别的账户的数字挂上去。
+
+  **就这三条，不多。** 它们是上游定死的名字：前两个来自 pi-ai 的 catalog，第三个是 native `llm-deepseek` 注册时写死的常量。而 `llm-pi-ai.providers` 下的 key **本身就是路由 id**，随你起名——所以你自己配的第二个 opencode 账户（比如 `opencode-go-extra`）胶囊不会显示。想支持得改这份名单；照抄某台机器的 `settings.yaml` 曾经就是这么留下两条没人服务的死名字的。
   点开胶囊是完整面板（逐窗口已用/剩余/进度条/重置时间，或逐币种余额），带「刷新」。切换模型即时切换数据，无需刷新页面。
 
 **设置页没有这个插件的卡片。** 它没有任何可配的东西，所以不登记 settings section——在「设置 → 插件」里它只会作为已安装插件出现一行，点进插件配置那一页找不到它。要看额度就看会话里的胶囊。
@@ -86,8 +88,8 @@ records:
 | provider | 数据来源 | 凭据 |
 | --- | --- | --- |
 | `openai-codex` | `GET https://chatgpt.com/backend-api/wham/usage`（私有契约） | `llm-pi-ai/openai-codex` 这条 grant 记录，账户 id 同源 |
-| `opencode-go` / `opencode-go-extra` | `GET {该路由实际 baseURL}/usage`（未公开接口，cc-switch#6433 发现） | 该路由配置的 `apiKeyEnv`（默认 `OPENCODE_GO_API_KEY`），回退 `llm-pi-ai` 存储的 API key 记录，`opencode-go` 再回退 OpenCode CLI 的 `auth.json`（CLI 一个账户一条记录，不借给 `-extra`）；同时携带 Bearer 与 `x-api-key` |
-| `deepseek-official` / `deepseek` | `GET {该路由实际 baseURL}/user/balance`（官方接口） | 该路由配置的 `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`），经 credentials seam 解析 |
+| `opencode-go` | `GET {该路由实际 baseURL}/usage`（未公开接口，cc-switch#6433 发现） | `llm-pi-ai.providers.opencode-go` 配的 `apiKeyEnv`（默认 `OPENCODE_GO_API_KEY`），回退 `llm-pi-ai` 存储的 API key 记录，再回退 OpenCode CLI 的 `auth.json`（一个账户一条记录）；同时携带 Bearer 与 `x-api-key` |
+| `deepseek-official` | `GET {该路由实际 baseURL}/user/balance`（官方接口） | `llm-deepseek` section（扁平，`settingsPath: []`）配的 `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`），经 credentials seam 解析 |
 
 两个百分比上游给的都是「已用」，原样显示，旁边的剩余是 100 减出来的；DeepSeek 金额保持 API 返回的十进制字符串，不做浮点换算。
 

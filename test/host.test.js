@@ -194,37 +194,36 @@ describe('the sections the API-key routes are configured in', { skip }, () => {
     }
   })
 
-  test('the pi-ai DeepSeek profile is read through providers, unlike the native one', async () => {
-    // `deepseek` and `deepseek-official` are two routes with two section
-    // shapes; the branch that tells them apart is the one below. Pinning only
-    // the native shape would leave a fallback to the PUBLIC endpoint looking
-    // correct for the pi-ai route.
+  test('a route id no catalog carries answers none, and costs no credential read', { skip }, async () => {
+    // `opencode-go-extra` and `deepseek` used to be answered here. Neither was
+    // a name anything upstream fixed: an `llm-pi-ai.providers` dict key IS the
+    // route, so both were copies of one deployment's settings.yaml, and they
+    // outlived it silently. The three that remain are pi-ai catalog names plus
+    // the constant llm-deepseek registers under. An id outside them must answer
+    // `none` without resolving a credential or reaching an endpoint — resolving
+    // one would mean a removed route still had a key to spend.
     const home = await freshHome()
     const rpc = captureRpc()
+    const asked = []
     const credentials = {
-      resolve: async ref => (String(ref) === 'DEEPSEEK_PI_KEY' ? { value: 'sk-pi-deepseek' } : undefined),
-      readRecord: async () => undefined,
+      resolve: async ref => { asked.push(String(ref)); return { value: 'sk-must-not-be-spent' } },
+      readRecord: async key => { asked.push(String(key)); return undefined },
     }
-    const ctx = await boot(home, { connection: rpc.connection, credentials })
-    const z = schemastery.default ?? schemastery
-    ctx.settings.register(
-      'llm-pi-ai',
-      z.object({ providers: z.dict(z.object({ apiKeyEnv: z.string(), baseURL: z.string() })) }),
-      { base: { providers: { deepseek: { apiKeyEnv: 'DEEPSEEK_PI_KEY', baseURL: 'https://deepseek.gateway.example/v1' } } } },
-    )
+    await boot(home, { connection: rpc.connection, credentials })
     const calls = []
     const realFetch = globalThis.fetch
-    globalThis.fetch = async (url, init) => {
-      calls.push({ url: String(url), auth: init?.headers?.Authorization })
-      return new Response(JSON.stringify({ is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '5.00' }] }),
-        { headers: { 'content-type': 'application/json' } })
+    globalThis.fetch = async (url) => {
+      calls.push(String(url))
+      return new Response('{}', { headers: { 'content-type': 'application/json' } })
     }
     try {
-      const answer = await rpc.handler().handler('usage', { provider: 'deepseek' }, new AbortController().signal)
-      assert.equal(answer.ok, true, `expected a balance, got ${JSON.stringify(answer)}`)
-      assert.equal(calls[0].url, 'https://deepseek.gateway.example/v1/user/balance',
-        'the nested profile decides the origin; a silent fallback would read api.deepseek.com')
-      assert.equal(calls[0].auth, 'Bearer sk-pi-deepseek')
+      for (const provider of ['opencode-go-extra', 'deepseek', 'glm-5.3']) {
+        const answer = await rpc.handler().handler('usage', { provider }, new AbortController().signal)
+        assert.equal(answer.ok, true, `${provider}: ${JSON.stringify(answer)}`)
+        assert.equal(answer.value.kind, 'none', provider)
+      }
+      assert.deepEqual(calls, [], 'a route this plugin does not serve must reach no endpoint')
+      assert.deepEqual(asked, [], 'nor resolve a credential it would have nowhere to send')
     } finally {
       globalThis.fetch = realFetch
     }
@@ -273,20 +272,21 @@ describe('the sections the API-key routes are configured in', { skip }, () => {
     }
   })
 
-  test('the OpenCode CLI key answers the route the CLI named, not the second account beside it', { skip }, async () => {
-    // `opencode-go-extra` exists to be a SECOND opencode account. The CLI's
-    // auth.json holds one entry per account, so answering the extra route out
-    // of the `opencode-go` entry reports the first account's quota under the
-    // second route — in the host, where no amount of per-provider state in the
-    // browser can correct it.
+  test('the OpenCode CLI key is read for the route the CLI can be signed into', { skip }, async () => {
+    // The last resort under the configured key and the stored record: the
+    // CLI's own auth.json, under either spelling it files `opencode-go` as.
+    // The CLI holds one entry per account, so a second opencode route would
+    // need its own; this pins that the route it does cover still resolves.
     const home = await freshHome()
     const cliHome = await freshHome()
     await mkdir(join(cliHome, '.local', 'share', 'opencode'), { recursive: true })
     await writeFile(join(cliHome, '.local', 'share', 'opencode', 'auth.json'),
-      JSON.stringify({ 'opencode-go': { type: 'api', key: 'sk-first-account' } }))
+      JSON.stringify({ opencode: { type: 'api', key: 'sk-from-the-cli' } }))
     const rpc = captureRpc()
-    const ctx = await boot(home, { connection: rpc.connection, credentials: { resolve: async () => undefined, readRecord: async () => undefined } })
-    assert.ok(ctx)
+    await boot(home, {
+      connection: rpc.connection,
+      credentials: { resolve: async () => undefined, readRecord: async () => undefined },
+    })
     const calls = []
     const realFetch = globalThis.fetch
     const realHome = process.env.HOME
@@ -296,13 +296,11 @@ describe('the sections the API-key routes are configured in', { skip }, () => {
     }
     process.env.HOME = cliHome
     try {
-      const named = await rpc.handler().handler('usage', { provider: 'opencode-go' }, new AbortController().signal)
-      assert.equal(named.ok, true, `the route the CLI named must still resolve, got ${JSON.stringify(named)}`)
-      assert.equal(calls[0].auth, 'Bearer sk-first-account')
-      const extra = await rpc.handler().handler('usage', { provider: 'opencode-go-extra' }, new AbortController().signal)
-      assert.equal(extra.ok, false, 'the second account has no key of its own and must say so')
-      assert.equal(extra.error.code, 'no-credential')
-      assert.equal(calls.length, 1, 'no request may go out carrying the other account\'s key')
+      const answer = await rpc.handler().handler('usage', { provider: 'opencode-go' }, new AbortController().signal)
+      assert.equal(answer.ok, true, `expected a quota window, got ${JSON.stringify(answer)}`)
+      assert.equal(calls[0].url, 'https://opencode.ai/zen/go/v1/usage')
+      assert.equal(calls[0].auth, 'Bearer sk-from-the-cli')
+      assert.equal(JSON.stringify(answer).includes('sk-from'), false, 'no key may reach the browser')
     } finally {
       globalThis.fetch = realFetch
       if (realHome === undefined) delete process.env.HOME

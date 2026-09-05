@@ -141,20 +141,18 @@ async function resolveApiKey(ctx, envName, recordOwner, recordId) {
 /**
  * The OpenCode CLI's own stored key, for hosts signed into opencode directly.
  *
- * Scoped to the route that asks. The CLI files one entry per account, and
- * `opencode-go-extra` exists precisely to be a SECOND account: answering it
- * out of the `opencode-go` entry reports the first account's quota under the
- * second route — the same confusion the browser's per-provider slots prevent,
- * except here it is the host reading the wrong key, so no amount of slot
- * keying reaches it. Only the route the CLI itself names carries the legacy
- * `opencode` spelling.
- * @param {string} provider - the model route asking for a key.
- * @returns {Promise<string|undefined>} the stored key, when the CLI holds one for THIS route.
+ * The CLI files one entry per account, and `opencode-go` is the only route
+ * this plugin answers for that the CLI can be signed into, so its two
+ * spellings are the whole lookup. A second opencode route would need its own
+ * entry rather than this one: lending it reports the first account's quota
+ * under the second route, in the host, where no amount of per-provider state
+ * in the browser can correct it.
+ * @returns {Promise<string|undefined>} the stored key, when the CLI holds one.
  */
-async function opencodeAuthJsonKey(provider) {
+async function opencodeAuthJsonKey() {
   try {
     var raw = JSON.parse(await readFile(join(homedir(), '.local', 'share', 'opencode', 'auth.json'), 'utf8'))
-    var entry = provider === 'opencode-go' ? raw['opencode-go'] ?? raw['opencode'] : raw[provider]
+    var entry = raw['opencode-go'] ?? raw['opencode']
     if (entry !== null && typeof entry === 'object' && entry.type === 'api'
       && typeof entry.key === 'string' && entry.key.length > 0) {
       return entry.key
@@ -190,6 +188,15 @@ export function apply(ctx) {
   const store = createCodexCredentialStore(ctx)
   const resolveAccessToken = createOpenAICodexAccessResolver(store)
   // The three quota sources, keyed by the model route the browser reports.
+  //
+  // Three route ids, and every one of them is a name something upstream fixed:
+  // `openai-codex` and `opencode-go` come from pi-ai's catalog, and
+  // `deepseek-official` is the constant the native llm-deepseek adapter
+  // registers itself under. Anything else in `llm-pi-ai.providers` is a dict
+  // key the operator chose — that dict key IS the route — so a name here that
+  // no catalog carries is really a copy of one deployment's settings.yaml, and
+  // it goes stale the day that file changes without anything saying so. Two of
+  // them did.
   // The endpoint of each API-key route is built from that route's own baseURL
   // plus a fixed suffix, so a key can only ever travel to the origin the model
   // route itself is configured against; unknown routes answer "none" and the
@@ -201,35 +208,31 @@ export function apply(ctx) {
   const nativeSection = () => readSection(ctx, 'llm-deepseek')
   const resolveRoute = async (provider) => {
     if (provider === 'openai-codex') return { kind: 'codex' }
-    if (provider === 'opencode-go' || provider === 'opencode-go-extra') {
+    if (provider === 'opencode-go') {
       const section = piSection()
       const profile = section === undefined ? undefined : section.providers?.[provider]
       const isProfile = profile !== null && typeof profile === 'object'
       const envName = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
         ? profile.apiKeyEnv : 'OPENCODE_GO_API_KEY'
-      const key = await resolveApiKey(ctx, envName, 'llm-pi-ai', provider) ?? await opencodeAuthJsonKey(provider)
+      const key = await resolveApiKey(ctx, envName, 'llm-pi-ai', provider) ?? await opencodeAuthJsonKey()
       if (key === undefined) throw new CodexUsageError('no-credential', 'OpenCode Go API key is not configured')
       const endpoint = httpBase(isProfile && typeof profile.baseURL === 'string' ? profile.baseURL : OPENCODE_GO_BASE_URL)
       if (endpoint === undefined) throw new CodexUsageError('unavailable', 'OpenCode Go usage endpoint is not an absolute URL')
       return { kind: 'opencode', endpoint, apiKey: key }
     }
-    if (provider === 'deepseek-official' || provider === 'deepseek') {
-      // Two section shapes, not one. The pi-ai section keys a profile dict by
-      // route, so `deepseek` there is `providers.deepseek`; the native
-      // llm-deepseek section is flat — it registers itself at `settingsPath:
-      // []`, so `apiKeyEnv` and `baseURL` sit at its root with no `providers`
-      // above them. Reading the native one through `providers` finds nothing
-      // and silently falls back to the defaults, which sends a key configured
-      // for a private endpoint to the public one.
-      const isNative = provider === 'deepseek-official'
-      const section = isNative ? nativeSection() : piSection()
-      const profile = section === undefined
-        ? undefined
-        : isNative ? section : section.providers?.['deepseek']
-      const isProfile = profile !== null && typeof profile === 'object'
+    if (provider === 'deepseek-official') {
+      // Two section shapes, not one. The pi-ai section read above keys a
+      // profile dict by route, so a route there is `providers.<route>`; the
+      // native llm-deepseek section is flat — it registers itself at
+      // `settingsPath: []`, so `apiKeyEnv` and `baseURL` sit at its root with
+      // no `providers` above them. Reading this one through `providers` finds
+      // nothing and silently falls back to the defaults, which sends a key
+      // configured for a private endpoint to the public one.
+      const profile = nativeSection()
+      const isProfile = profile !== null && profile !== undefined && typeof profile === 'object'
       const envName = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
         ? profile.apiKeyEnv : 'DEEPSEEK_API_KEY'
-      const key = await resolveApiKey(ctx, envName, provider === 'deepseek' ? 'llm-pi-ai' : undefined, provider === 'deepseek' ? 'deepseek' : '')
+      const key = await resolveApiKey(ctx, envName, undefined, '')
       if (key === undefined) throw new CodexUsageError('no-credential', 'DeepSeek API key is not configured')
       // Same shape as the OpenCode branch above, and for the same reason: the
       // ternary picks the SOURCE, `httpBase` validates whatever it picked, and
