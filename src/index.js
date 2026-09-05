@@ -138,11 +138,23 @@ async function resolveApiKey(ctx, envName, recordOwner, recordId) {
   return undefined
 }
 
-/** The OpenCode CLI's own stored key, for hosts signed into opencode directly. */
-async function opencodeAuthJsonKey() {
+/**
+ * The OpenCode CLI's own stored key, for hosts signed into opencode directly.
+ *
+ * Scoped to the route that asks. The CLI files one entry per account, and
+ * `opencode-go-extra` exists precisely to be a SECOND account: answering it
+ * out of the `opencode-go` entry reports the first account's quota under the
+ * second route — the same confusion the browser's per-provider slots prevent,
+ * except here it is the host reading the wrong key, so no amount of slot
+ * keying reaches it. Only the route the CLI itself names carries the legacy
+ * `opencode` spelling.
+ * @param {string} provider - the model route asking for a key.
+ * @returns {Promise<string|undefined>} the stored key, when the CLI holds one for THIS route.
+ */
+async function opencodeAuthJsonKey(provider) {
   try {
     var raw = JSON.parse(await readFile(join(homedir(), '.local', 'share', 'opencode', 'auth.json'), 'utf8'))
-    var entry = raw['opencode-go'] ?? raw['opencode']
+    var entry = provider === 'opencode-go' ? raw['opencode-go'] ?? raw['opencode'] : raw[provider]
     if (entry !== null && typeof entry === 'object' && entry.type === 'api'
       && typeof entry.key === 'string' && entry.key.length > 0) {
       return entry.key
@@ -195,7 +207,7 @@ export function apply(ctx) {
       const isProfile = profile !== null && typeof profile === 'object'
       const envName = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
         ? profile.apiKeyEnv : 'OPENCODE_GO_API_KEY'
-      const key = await resolveApiKey(ctx, envName, 'llm-pi-ai', provider) ?? await opencodeAuthJsonKey()
+      const key = await resolveApiKey(ctx, envName, 'llm-pi-ai', provider) ?? await opencodeAuthJsonKey(provider)
       if (key === undefined) throw new CodexUsageError('no-credential', 'OpenCode Go API key is not configured')
       const endpoint = httpBase(isProfile && typeof profile.baseURL === 'string' ? profile.baseURL : OPENCODE_GO_BASE_URL)
       if (endpoint === undefined) throw new CodexUsageError('unavailable', 'OpenCode Go usage endpoint is not an absolute URL')
@@ -219,10 +231,20 @@ export function apply(ctx) {
         ? profile.apiKeyEnv : 'DEEPSEEK_API_KEY'
       const key = await resolveApiKey(ctx, envName, provider === 'deepseek' ? 'llm-pi-ai' : undefined, provider === 'deepseek' ? 'deepseek' : '')
       if (key === undefined) throw new CodexUsageError('no-credential', 'DeepSeek API key is not configured')
-      const configured = isProfile && typeof profile.baseURL === 'string' ? profile.baseURL : undefined
-      const base = httpBase(configured)
-        ?? httpBase(launchEnvironmentOf(ctx).get('DEEPSEEK_BASE_URL')?.value)
-        ?? DEEPSEEK_PUBLIC_BASE_URL
+      // Same shape as the OpenCode branch above, and for the same reason: the
+      // ternary picks the SOURCE, `httpBase` validates whatever it picked, and
+      // a value it cannot use fails the read. Written the other way round —
+      // `httpBase(configured) ?? httpBase(env) ?? PUBLIC` — a base that is
+      // merely missing its scheme is indistinguishable from no base at all,
+      // and the fallback sends a key provisioned for a private endpoint to
+      // api.deepseek.com. An absent field is the only "not configured": the
+      // settings schema omits a string it was never given rather than
+      // defaulting it to empty.
+      const configured = isProfile && typeof profile.baseURL === 'string'
+        ? profile.baseURL
+        : launchEnvironmentOf(ctx).get('DEEPSEEK_BASE_URL')?.value
+      const base = httpBase(configured === undefined ? DEEPSEEK_PUBLIC_BASE_URL : configured)
+      if (base === undefined) throw new CodexUsageError('unavailable', 'DeepSeek balance endpoint is not an absolute URL')
       return { kind: 'deepseek', endpoint: base, apiKey: key }
     }
     return undefined

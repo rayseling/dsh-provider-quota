@@ -46,19 +46,26 @@
       ? globalThis.clearTimeout.bind(globalThis)
       : undefined
 
-    // The provider routes this chip answers for, mapped to the state slot the
-    // controller keeps per provider family — one slot per family, so switching
-    // models can never show one account's numbers under another provider.
+    // The provider routes this chip answers for, mapped to the PANEL each one
+    // renders in.
+    //
+    // A shape, not a state key. `opencode-go` and `opencode-go-extra` draw the
+    // same three windows but are two accounts, and so are the two DeepSeek
+    // routes; the second of each pair exists to be a second account. Keying
+    // the controller's state by this instead of by the provider is what let a
+    // session switched from one to the other keep showing the first one's
+    // numbers: the shared slot was already loaded, so the chip's effect below
+    // saw a non-idle slot and re-read nothing.
     var PROVIDER_ROUTES = {
-      'openai-codex': 'codex',
-      'opencode-go': 'opencode',
-      'opencode-go-extra': 'opencode',
-      'deepseek-official': 'deepseek',
-      'deepseek': 'deepseek',
+      'openai-codex': 'windows',
+      'opencode-go': 'windows',
+      'opencode-go-extra': 'windows',
+      'deepseek-official': 'balance',
+      'deepseek': 'balance',
     }
 
-    // The per-route state slots the controller projects.
-    var USAGE_ROUTES = ['codex', 'opencode', 'deepseek']
+    // One state slot per provider, so no two accounts ever share one.
+    var USAGE_PROVIDERS = Object.keys(PROVIDER_ROUTES)
 
     // A stable stand-in for the model directory when the service is absent or
     // a session has no directory scope: same shape, never notifies.
@@ -278,7 +285,7 @@
     }
 
     /**
-     * The capsule text for one provider family. Windows show the used
+     * The capsule text for one provider. Windows show the used
      * percentage — one or both Codex windows, all three for OpenCode — and
      * DeepSeek shows the account balance. While loading or after a failure
      * the capsule reads "额度 …" / "额度 --" in the muted style.
@@ -357,7 +364,7 @@
 
     /**
      * Own the one conversation behind both surfaces: the quota read, per
-     * provider family, over the trusted Connection RPC.
+     * provider, over the trusted Connection RPC.
      *
      * There is no settings conversation any more. The card edits nothing, so
      * this holds no draft, no revision to fence a write on, and no describe
@@ -369,10 +376,10 @@
       var self = this
       this.connection = connection
       this.locale = locale
-      // One state slot per provider family, so switching models can never show
-      // one account's numbers under another provider.
+      // One state slot per provider, so switching models can never show one
+      // account's numbers under another provider.
       this.routes = {}
-      USAGE_ROUTES.forEach(function (route) { self.routes[route] = newUsageSlot() })
+      USAGE_PROVIDERS.forEach(function (id) { self.routes[id] = newUsageSlot() })
       this.modelDirectoryFor = undefined
       this.disposed = false
       this.usagePollTimer = undefined
@@ -405,7 +412,7 @@
     Controller.prototype.publish = function () { this.store.set(this.project()) }
 
     /**
-     * Read one provider family's normalized usage over the trusted Connection
+     * Read one provider's normalized usage over the trusted Connection
      * RPC. Each route slot carries its own generation and abort, so a late
      * answer for a provider the session has switched away from is dropped
      * rather than shown under the wrong provider.
@@ -419,9 +426,9 @@
      */
     Controller.prototype.loadUsage = function (provider, force, background) {
       var self = this
-      var route = typeof provider === 'string' ? PROVIDER_ROUTES[provider] : undefined
-      if (this.disposed || route === undefined) return Promise.resolve()
-      var slot = this.routes[route]
+      var known = typeof provider === 'string' && PROVIDER_ROUTES[provider] !== undefined
+      if (this.disposed || !known) return Promise.resolve()
+      var slot = this.routes[provider]
       // Two reads of one route collapse into one, except when a reader forces
       // a refresh over a poll: joining that read would answer the click with
       // the cached numbers the poll asked for.
@@ -511,8 +518,8 @@
         cancelUsagePoll(this.usagePollTimer)
         this.usagePollTimer = undefined
       }
-      USAGE_ROUTES.forEach(function (route) {
-        var slot = self.routes[route]
+      USAGE_PROVIDERS.forEach(function (id) {
+        var slot = self.routes[id]
         slot.generation++
         if (slot.abort !== undefined) slot.abort.abort()
         slot.abort = undefined
@@ -745,9 +752,9 @@
         content)
     }
 
-    /** @param {string} route @param {object} routeState @param {object} text @param {string} language @param {() => void} onRefresh @returns {object} the panel for one route. */
-    function chipPanelElement(route, routeState, text, language, onRefresh) {
-      if (route === 'deepseek') return balancePanelElement(routeState, text, onRefresh, language)
+    /** @param {string} shape @param {object} routeState @param {object} text @param {string} language @param {() => void} onRefresh @returns {object} the panel this provider renders in. */
+    function chipPanelElement(shape, routeState, text, language, onRefresh) {
+      if (shape === 'balance') return balancePanelElement(routeState, text, onRefresh, language)
       return windowsPanelElement(routeState, text, onRefresh, language)
     }
 
@@ -796,19 +803,22 @@
       }, [isOpen])
       var current = modelState === null || modelState === undefined ? null : modelState.current
       var provider = current === null || current === undefined ? undefined : current.provider
-      var route = typeof provider === 'string' ? PROVIDER_ROUTES[provider] : undefined
-      var routeState = route === undefined ? undefined : state.routes[route]
+      var shape = typeof provider === 'string' ? PROVIDER_ROUTES[provider] : undefined
+      var routeState = shape === undefined ? undefined : state.routes[provider]
       var loadUsage = props.loadUsage
-      // The Codex slot loads with the settings card; the other two load the
-      // first time a session actually selects their provider.
+      // Codex loads at mount; every other provider loads the first time a
+      // session actually selects it. Its own slot is what makes that first
+      // time arrive: with one slot per family, selecting the second account of
+      // a family found the first account's slot already `ready` and read
+      // nothing, so the chip kept showing numbers belonging to the other one.
       React.useEffect(function () {
-        if (route === undefined || routeState === undefined) return undefined
+        if (shape === undefined || routeState === undefined) return undefined
         if (routeState.state !== 'idle') return undefined
         void loadUsage(provider, false)
-      }, [route, routeState, loadUsage, provider])
+      }, [shape, routeState, loadUsage, provider])
       // A provider this plugin does not answer for renders nothing at all —
       // showing Codex numbers next to a GLM session would be worse than empty.
-      if (route === undefined || routeState === undefined) return null
+      if (shape === undefined || routeState === undefined) return null
       var text = TEXT[state.language]
       var label = quotaChipLabel(routeState, text)
       var ready = quotaChipReady(routeState)
@@ -824,7 +834,7 @@
         }, label),
         isOpen
           ? h('div', { className: 'dcl-chipPopover', role: 'dialog', 'aria-label': provider },
-            chipPanelElement(route, routeState, text, state.language, function () { void props.refreshUsage(provider) }))
+            chipPanelElement(shape, routeState, text, state.language, function () { void props.refreshUsage(provider) }))
           : null)
     }
 

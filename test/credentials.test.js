@@ -118,9 +118,10 @@ const storedRecord = ctx => ctx.get('credentials').readRecord(recordKey())
 /** @param {object} ctx @returns {Promise<boolean>} whether a writer lock is still present. */
 const isLocked = async ctx => (await readdir(ctx.home)).some(entry => entry.endsWith('.lock'))
 
-/** @param {object} ctx @returns {() => Promise<string>} a resolver over that context's record. */
-const resolverOver = ctx => tokenModule.createOpenAICodexAccessResolver(
+/** @param {object} ctx @param {object} [options] @returns {() => Promise<string>} a resolver over that context's record. */
+const resolverOver = (ctx, options) => tokenModule.createOpenAICodexAccessResolver(
   credentialsModule.createCodexCredentialStore(ctx),
+  options,
 )
 
 /** @param {() => Promise<string>} resolve @returns {Promise<unknown>} the thrown value, or nothing. */
@@ -286,6 +287,38 @@ describe('credential failures over the record', { skip }, () => {
     assert.doesNotMatch(llmModule.errorChain(error), /rt_MUST_NOT_APPEAR/u)
     assert.equal(error.cause, undefined, 'nothing unredacted is kept for a renderer to find')
     assert.equal(await isLocked(ctx), false)
+  })
+
+  test('a refresh that outlives its deadline is cancelled, not left running', async () => {
+    // Two properties, and the first is worth nothing without the second.
+    //
+    // Reaching the deadline has to report TIMEOUT. Let pi-ai's own ceiling win
+    // that race instead and the failure arrives worded as an abort, which
+    // `classifyCredentialFailure` reads as TRANSPORT — a dropped link, retried
+    // as such.
+    //
+    // And the request has to actually END. Calling `refresh` with the
+    // credential alone dropped the signal pi-ai hands in, leaving the token
+    // request unsignalled: the deadline stopped the waiting while the fetch
+    // ran on with no ceiling at all. Such a refresh can still succeed at
+    // OpenAI long afterwards and rotate the grant, by which time the
+    // transaction that would have stored the rotated token has failed and
+    // released the lock — and the operator signs in again.
+    const ctx = await bootCredentials()
+    await storeGrant(ctx)
+    let cancelled = false
+    globalThis.fetch = (_url, init) => new Promise((_resolve, reject) => {
+      // The endpoint that never answers: only an abort can end this request,
+      // so a deadline that carries none hangs here until the suite times out.
+      init.signal.addEventListener('abort', () => {
+        cancelled = true
+        reject(new Error('the token request was cancelled'))
+      }, { once: true })
+    })
+    const error = await resolveOnce(resolverOver(ctx, { refreshTimeoutMs: 30 }))
+    assert.equal(cancelled, true, 'the token request must be ended, not abandoned to finish later')
+    assert.equal(error?.code, 'TIMEOUT')
+    assert.equal(await isLocked(ctx), false, 'releasing the document lock is what the deadline is for')
   })
 
   test('a refresh that never reached the endpoint is transport, not authentication', async () => {

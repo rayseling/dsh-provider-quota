@@ -14,7 +14,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, test } from 'node:test'
@@ -227,6 +227,86 @@ describe('the sections the API-key routes are configured in', { skip }, () => {
       assert.equal(calls[0].auth, 'Bearer sk-pi-deepseek')
     } finally {
       globalThis.fetch = realFetch
+    }
+  })
+
+  test('a baseURL the plugin cannot use fails the read; it never becomes the public endpoint', { skip }, async () => {
+    // A configured base and a missing one are two different states, and the
+    // difference is a key. `httpBase(configured) ?? httpBase(env) ?? PUBLIC`
+    // could not tell them apart: a private gateway typed without its scheme —
+    // the single most likely way to get this field wrong — read as "nothing
+    // configured", and the key provisioned for that gateway went to
+    // api.deepseek.com. The OpenCode branch has always failed closed on the
+    // same input, so this pins both, and pins that they agree.
+    const home = await freshHome()
+    const rpc = captureRpc()
+    const credentials = {
+      resolve: async () => ({ value: 'sk-provisioned-for-the-private-gateway' }),
+      readRecord: async () => undefined,
+    }
+    const ctx = await boot(home, { connection: rpc.connection, credentials })
+    const z = schemastery.default ?? schemastery
+    ctx.settings.register('llm-deepseek', z.object({ baseURL: z.string() }),
+      { base: { baseURL: 'deepseek.internal.example/v1' } })
+    ctx.settings.register('llm-pi-ai', z.object({ providers: z.dict(z.object({ baseURL: z.string() })) }),
+      { base: { providers: { 'opencode-go': { baseURL: 'gateway.internal.example/zen/go/v1' } } } })
+    const calls = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      calls.push(String(url))
+      return new Response('{}', { headers: { 'content-type': 'application/json' } })
+    }
+    try {
+      const answers = {}
+      for (const provider of ['deepseek-official', 'opencode-go']) {
+        answers[provider] = await rpc.handler().handler('usage', { provider }, new AbortController().signal)
+      }
+      // Where the key went is the finding; the failure code is only how the
+      // reader hears about it. Assert them in that order.
+      assert.deepEqual(calls, [], 'an unusable base must send the key nowhere, least of all to a public endpoint')
+      for (const [provider, answer] of Object.entries(answers)) {
+        assert.equal(answer.ok, false, `${provider} answered ${JSON.stringify(answer)} for a base it cannot use`)
+        assert.equal(answer.error.code, 'unavailable', provider)
+      }
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  test('the OpenCode CLI key answers the route the CLI named, not the second account beside it', { skip }, async () => {
+    // `opencode-go-extra` exists to be a SECOND opencode account. The CLI's
+    // auth.json holds one entry per account, so answering the extra route out
+    // of the `opencode-go` entry reports the first account's quota under the
+    // second route — in the host, where no amount of per-provider state in the
+    // browser can correct it.
+    const home = await freshHome()
+    const cliHome = await freshHome()
+    await mkdir(join(cliHome, '.local', 'share', 'opencode'), { recursive: true })
+    await writeFile(join(cliHome, '.local', 'share', 'opencode', 'auth.json'),
+      JSON.stringify({ 'opencode-go': { type: 'api', key: 'sk-first-account' } }))
+    const rpc = captureRpc()
+    const ctx = await boot(home, { connection: rpc.connection, credentials: { resolve: async () => undefined, readRecord: async () => undefined } })
+    assert.ok(ctx)
+    const calls = []
+    const realFetch = globalThis.fetch
+    const realHome = process.env.HOME
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), auth: init?.headers?.Authorization })
+      return new Response(JSON.stringify({ usage: { rolling: { percent: 5 } } }), { headers: { 'content-type': 'application/json' } })
+    }
+    process.env.HOME = cliHome
+    try {
+      const named = await rpc.handler().handler('usage', { provider: 'opencode-go' }, new AbortController().signal)
+      assert.equal(named.ok, true, `the route the CLI named must still resolve, got ${JSON.stringify(named)}`)
+      assert.equal(calls[0].auth, 'Bearer sk-first-account')
+      const extra = await rpc.handler().handler('usage', { provider: 'opencode-go-extra' }, new AbortController().signal)
+      assert.equal(extra.ok, false, 'the second account has no key of its own and must say so')
+      assert.equal(extra.error.code, 'no-credential')
+      assert.equal(calls.length, 1, 'no request may go out carrying the other account\'s key')
+    } finally {
+      globalThis.fetch = realFetch
+      if (realHome === undefined) delete process.env.HOME
+      else process.env.HOME = realHome
     }
   })
 })

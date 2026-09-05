@@ -4,8 +4,9 @@
  *
  * Credential resolution is the one phase no caller bounds. pi-ai refreshes an
  * expired token inside the credential store's `modify`, which the harness
- * credential plane serializes across processes, and the refresh itself carries
- * no deadline. This module therefore owns three guards around it — one refresh
+ * credential plane serializes across processes; pi-ai bounds the token request
+ * itself, but nothing bounds the wait for that cross-process lock. This module
+ * therefore owns three guards around it — one refresh
  * at a time per process, a ceiling on the refresh so the record lock is
  * released, and a ceiling on the whole resolution so a stalled token endpoint
  * fails the quota read instead of freezing it.
@@ -30,25 +31,37 @@ import { OPENAI_CODEX_PROVIDER } from './credentials.js'
 const CREDENTIAL_TIMEOUT_MS = 20_000
 
 /**
- * Ceiling for the OAuth refresh alone, below {@link CREDENTIAL_TIMEOUT_MS} so
- * the credential record's document lock is released while the caller is still
- * waiting.
+ * Ceiling for the OAuth refresh alone. Two deadlines sit above it and it has
+ * to stay under both.
+ *
+ * {@link CREDENTIAL_TIMEOUT_MS}, so the credential record's document lock is
+ * released while the caller is still waiting. And pi-ai 0.84.2's own 15s
+ * `AbortSignal.timeout` around `refresh`, armed in
+ * `@earendil-works/pi-ai/dist/auth/resolve.js`, so that the deadline which
+ * fires first is always the one {@link boundedRefreshProvider} raises — the
+ * only one carrying the marker {@link classifyCredentialFailure} reads as
+ * TIMEOUT. At the equal values these two had, that race was settled by which
+ * timer happened to be constructed first.
  */
-const REFRESH_TIMEOUT_MS = 15_000
+const REFRESH_TIMEOUT_MS = 14_000
+
+/**
+ * Deadlines are injectable here for the same reason they are on every fetch in
+ * `./usage.js`: a test that has to spend the real one cannot afford to assert
+ * what happens at it, and a suite that cannot assert it stops noticing when
+ * reaching the deadline quietly changes meaning. Nothing in the plugin passes
+ * this; {@link REFRESH_TIMEOUT_MS} is the shipped value.
+ * @typedef {{refreshTimeoutMs?: number}} ResolverOptions
+ */
 
 /**
  * Reject with `onTimeout()` once `promise` outlives `timeoutMs`.
  *
- * The underlying work is not cancelled. pi-ai 0.84.2 does hand a signal to
- * `refresh(credential, signal)`, but {@link boundedRefreshProvider} calls it
- * with the credential alone, so the fetch runs unsignalled and this deadline
- * can only stop waiting. Dropping the signal is deliberate: pi-ai's own
- * ceiling equals {@link REFRESH_TIMEOUT_MS}, so it would fire at the same
- * moment under a message this module cannot recognise, and only a rejection
- * raised here carries the marker {@link classifyCredentialFailure} needs to
- * report TIMEOUT rather than TRANSPORT. The abandoned promise keeps a
- * rejection handler here so a late failure never surfaces as an unhandled
- * rejection.
+ * This stops WAITING and nothing else; cancelling the work behind it is the
+ * caller's business. {@link boundedRefreshProvider} does cancel its own, from
+ * inside `onTimeout`; the credential resolution below has nothing to cancel.
+ * The abandoned promise keeps a rejection handler here so a late failure never
+ * surfaces as an unhandled rejection.
  * @template T
  * @param {Promise<T>} promise - the work to bound.
  * @param {number} timeoutMs - deadline in milliseconds.
@@ -127,7 +140,8 @@ function classifyCredentialFailure(error) {
 
 /**
  * Clone the provider so its OAuth refresh cannot outlive
- * {@link REFRESH_TIMEOUT_MS}.
+ * {@link REFRESH_TIMEOUT_MS} — and so that reaching that deadline ends the
+ * request rather than only stopping the wait for it.
  *
  * pi-ai runs `refresh` inside the credential store's `modify`, which the
  * harness credential plane serializes with a cross-process lock over the whole
@@ -136,12 +150,33 @@ function classifyCredentialFailure(error) {
  * the native `llm-pi-ai` route's own refresh, any other route's key, and the
  * same work in other dsh processes sharing `$DSH_HOME` — rather than only
  * itself. Bounding the refresh below that wait releases the lock, which is what
- * those waiters need; the request behind it cannot be cancelled and is simply
- * abandoned.
+ * those waiters need.
+ *
+ * Two things have to hold at once, and the first version of this wrapper
+ * bought the first by giving up the second:
+ *
+ * - The rejection must carry {@link REFRESH_TIMEOUT_MARKER}, or
+ *   {@link classifyCredentialFailure} sees pi-ai's own abort wording and
+ *   reports TRANSPORT for what is this module's deadline. That is why the
+ *   deadline is raised here instead of delegated to pi-ai's, and why
+ *   {@link REFRESH_TIMEOUT_MS} now sits below it rather than equal to it.
+ * - The token request must actually be cancelled. Passing `refresh` the
+ *   credential alone dropped the signal pi-ai hands in, which left the
+ *   underlying `fetch` unsignalled — not bounded at 15s by pi-ai, bounded by
+ *   nothing at all. An abandoned refresh could then succeed minutes later and
+ *   rotate the grant at OpenAI, while the transaction that would have stored
+ *   the rotated refresh token had already failed and released the lock. A
+ *   grant rotated upstream and dropped here is a sign-in the operator redoes.
+ *
+ * So keep pi-ai's signal, add one this module can trip, and trip it as the
+ * deadline rejects. Cancelling the socket cannot un-rotate a refresh the
+ * endpoint already committed — nothing on this side can — but it bounds that
+ * window to the deadline instead of leaving it open.
  * @param {import('@earendil-works/pi-ai').Provider} provider - the catalog provider.
- * @returns {import('@earendil-works/pi-ai').Provider} the provider whose refresh is bounded.
+ * @param {number} timeoutMs - the deadline to bound the refresh at.
+ * @returns {import('@earendil-works/pi-ai').Provider} the provider whose refresh is bounded and cancelled.
  */
-function boundedRefreshProvider(provider) {
+function boundedRefreshProvider(provider, timeoutMs) {
   const oauth = provider.auth.oauth
   if (oauth === undefined) return provider
   return {
@@ -150,11 +185,20 @@ function boundedRefreshProvider(provider) {
       ...provider.auth,
       oauth: {
         ...oauth,
-        refresh: credential => withDeadline(
-          oauth.refresh(credential),
-          REFRESH_TIMEOUT_MS,
-          () => new Error(`${REFRESH_TIMEOUT_MARKER} within ${REFRESH_TIMEOUT_MS}ms`),
-        ),
+        refresh: (credential, signal) => {
+          const deadline = new AbortController()
+          const bounded = signal === undefined
+            ? deadline.signal
+            : AbortSignal.any([signal, deadline.signal])
+          return withDeadline(
+            oauth.refresh(credential, bounded),
+            timeoutMs,
+            () => {
+              deadline.abort()
+              return new Error(`${REFRESH_TIMEOUT_MARKER} within ${timeoutMs}ms`)
+            },
+          )
+        },
       },
     },
   }
@@ -168,11 +212,12 @@ function boundedRefreshProvider(provider) {
  * that need the non-secret ChatGPT account id read it from the credential store
  * after this resolution, when a possible token rotation has been persisted.
  * @param {object} store - the pi-ai credential store over the harness credential record.
+ * @param {ResolverOptions} [options] - deadline overrides; the plugin passes none.
  * @returns {() => Promise<string>} a single-flight, bounded access-token resolver.
  */
-export function createOpenAICodexAccessResolver(store) {
+export function createOpenAICodexAccessResolver(store, options = {}) {
   const models = createModels({ credentials: store })
-  models.setProvider(boundedRefreshProvider(openaiCodexProvider()))
+  models.setProvider(boundedRefreshProvider(openaiCodexProvider(), options.refreshTimeoutMs ?? REFRESH_TIMEOUT_MS))
   /** @type {Promise<import('@earendil-works/pi-ai').AuthResult | undefined> | undefined} */
   let inflight
   const resolveCredential = () => {

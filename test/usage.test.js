@@ -1,6 +1,7 @@
 /** Unit coverage for the private Codex usage boundary. */
 
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import { describe, test } from 'node:test'
 import {
   CodexUsageError,
@@ -292,6 +293,45 @@ describe('API-key provider fetches', () => {
       error => error.code === 'auth',
     )
   })
+
+  test('a redirect off the configured origin fails the read instead of replaying the key there', async () => {
+    // Real servers and the real `fetch`, because the property under test is
+    // the runtime's, not ours: a cross-origin redirect drops `Authorization`
+    // by spec, and drops nothing else. `x-api-key` therefore arrives intact at
+    // whatever origin the redirect names, and asserting our own `redirect`
+    // option instead of watching a second origin's inbox would prove only that
+    // the option was spelled correctly.
+    const received = []
+    const elsewhere = createServer((request, response) => {
+      received.push({ who: 'elsewhere', key: request.headers['x-api-key'], auth: request.headers.authorization })
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({ usage: { rolling: { percent: 1 } } }))
+    })
+    const configured = createServer((request, response) => {
+      received.push({ who: 'configured', key: request.headers['x-api-key'], auth: request.headers.authorization })
+      response.writeHead(302, { location: `http://127.0.0.1:${elsewhere.address().port}${request.url}` })
+      response.end()
+    })
+    await new Promise(resolve => { elsewhere.listen(0, '127.0.0.1', resolve) })
+    await new Promise(resolve => { configured.listen(0, '127.0.0.1', resolve) })
+    const endpoint = `http://127.0.0.1:${configured.address().port}`
+    try {
+      await assert.rejects(
+        fetchOpencodeUsage({ endpoint, apiKey: 'sk_MUST_STAY_HOST_SIDE' }),
+        error => error.code === 'network',
+      )
+      await assert.rejects(
+        fetchDeepSeekBalance({ endpoint, apiKey: 'sk_MUST_STAY_HOST_SIDE' }),
+        error => error.code === 'network',
+      )
+    } finally {
+      configured.close()
+      elsewhere.close()
+    }
+    assert.deepEqual(received.map(entry => entry.who), ['configured', 'configured'],
+      'only the origin the route is configured against may see the request')
+    assert.equal(received.some(entry => entry.who === 'elsewhere'), false)
+  })
 })
 
 describe('provider usage service and RPC', () => {
@@ -356,6 +396,37 @@ describe('provider usage service and RPC', () => {
     const switchedBack = await service.get('opencode-go')
     assert.equal(opencodeCalls.length, 1, 'the other provider never consumed this cache')
     assert.equal(switchedBack.windows[0].remainingPercent, 90)
+  })
+
+  test('a key rotated mid-flight gets its own read, not the previous key\'s answer', async () => {
+    // Changing the key already discarded the CACHE. The in-flight read is the
+    // other half: leaving it attached let the coalescing hand the previous
+    // key's answer to the next caller, so the new account read the old
+    // account's numbers off one upstream request that was never repeated.
+    let release
+    const gate = new Promise(resolve => { release = resolve })
+    let upstream = 0
+    let apiKey = 'k_FIRST'
+    const service = createProviderUsageService({
+      resolveRoute: async () => ({ kind: 'opencode', endpoint: 'https://opencode.ai/zen/go/v1', apiKey }),
+      codex: { resolveAccessToken: async () => 'access', readCredential: async () => ({ accountId: 'acc' }) },
+      now: () => NOW,
+      fetch: async () => {
+        upstream++
+        const percent = upstream === 1 ? 11 : 77
+        await gate
+        return new Response(JSON.stringify({ usage: { rolling: { percent } } }), { status: 200 })
+      },
+    })
+    const first = service.get('opencode-go')
+    await new Promise(resolve => { setImmediate(resolve) })
+    apiKey = 'k_SECOND'
+    const second = service.get('opencode-go')
+    release()
+    const [firstValue, secondValue] = await Promise.all([first, second])
+    assert.equal(upstream, 2, 'the second key must not join a read started with the first')
+    assert.equal(firstValue.windows[0].usedPercent, 11)
+    assert.equal(secondValue.windows[0].usedPercent, 77)
   })
 
   test('the RPC validates the provider payload and keeps the legacy shape for stale callers', async () => {

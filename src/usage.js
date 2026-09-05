@@ -40,6 +40,20 @@ const FIVE_HOUR_SECONDS = 5 * 60 * 60
 const WEEK_SECONDS = 7 * 24 * 60 * 60
 const WINDOW_TOLERANCE = 0.05
 const DEFAULT_TIMEOUT_MS = 15_000
+
+/**
+ * Every credentialed request here refuses redirects outright.
+ *
+ * A cross-origin redirect drops `Authorization` — the fetch spec says so and
+ * undici obeys — but nothing drops a CUSTOM header, so the `x-api-key` the
+ * OpenCode gateway wants would be replayed verbatim at whatever origin the
+ * redirect names, and so would the Codex account id. Following buys nothing
+ * in exchange: all three endpoints are fixed paths under a base the operator
+ * configured, so a redirect is either a misconfiguration or an attempt to
+ * move the credential somewhere else, and refusing is the right answer to
+ * both. The refusal surfaces as a `network` failure, which is what it is.
+ */
+const REDIRECT_POLICY = 'error'
 const DEFAULT_CACHE_TTL_MS = 30_000
 const DEFAULT_FORCE_MIN_INTERVAL_MS = 5_000
 
@@ -230,6 +244,7 @@ export async function fetchOpenAICodexUsage(options) {
     response = await fetchImpl(options.endpoint ?? OPENAI_CODEX_USAGE_URL, {
       method: 'GET',
       headers,
+      redirect: REDIRECT_POLICY,
       signal,
     })
   } catch (error) {
@@ -558,6 +573,7 @@ export async function fetchOpencodeUsage(options) {
         // The gateway rejects recognizable CLI agents; present as a browser.
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       },
+      redirect: REDIRECT_POLICY,
       signal,
     })
   } catch (error) {
@@ -602,6 +618,7 @@ export async function fetchDeepSeekBalance(options) {
     response = await fetchImpl(options.endpoint + '/user/balance', {
       method: 'GET',
       headers: { Accept: 'application/json', Authorization: 'Bearer ' + options.apiKey },
+      redirect: REDIRECT_POLICY,
       signal,
     })
   } catch (error) {
@@ -651,6 +668,12 @@ function createKeyedUsageCache(options) {
         cached = undefined
         cachedAt = 0
         lastAttemptAt = 0
+        // The in-flight read belongs to the identity that started it. Leaving
+        // it attached lets the coalescing below hand its answer to whoever
+        // arrives next, which after a key rotation is a different account
+        // reading the previous one's numbers. Detached, not aborted: the
+        // caller already waiting on it still gets the answer it asked for.
+        inflight = undefined
       }
       var at = options.now()
       var joined = inflight

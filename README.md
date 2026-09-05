@@ -86,14 +86,16 @@ records:
 | provider | 数据来源 | 凭据 |
 | --- | --- | --- |
 | `openai-codex` | `GET https://chatgpt.com/backend-api/wham/usage`（私有契约） | `llm-pi-ai/openai-codex` 这条 grant 记录，账户 id 同源 |
-| `opencode-go` / `opencode-go-extra` | `GET {该路由实际 baseURL}/usage`（未公开接口，cc-switch#6433 发现） | 该路由配置的 `apiKeyEnv`（默认 `OPENCODE_GO_API_KEY`），回退 `llm-pi-ai` 存储的 API key 记录，再回退 OpenCode CLI 的 `auth.json`；同时携带 Bearer 与 `x-api-key` |
+| `opencode-go` / `opencode-go-extra` | `GET {该路由实际 baseURL}/usage`（未公开接口，cc-switch#6433 发现） | 该路由配置的 `apiKeyEnv`（默认 `OPENCODE_GO_API_KEY`），回退 `llm-pi-ai` 存储的 API key 记录，`opencode-go` 再回退 OpenCode CLI 的 `auth.json`（CLI 一个账户一条记录，不借给 `-extra`）；同时携带 Bearer 与 `x-api-key` |
 | `deepseek-official` / `deepseek` | `GET {该路由实际 baseURL}/user/balance`（官方接口） | 该路由配置的 `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`），经 credentials seam 解析 |
 
-两个百分比上游给的都是「已用」，原样显示，旁边的剩余是 100 减出来的；DeepSeek 金额保持 API 返回的十进制字符串，不做浮点换算。浏览器通过 Harness Connection RPC 的 `/dsh-provider-quota` channel 拿到标准化结果；Connection 会先校验 Host / Origin / Fetch-Site 和浏览器会话。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
+两个百分比上游给的都是「已用」，原样显示，旁边的剩余是 100 减出来的；DeepSeek 金额保持 API 返回的十进制字符串，不做浮点换算。
+
+**`baseURL` 写错不会退到公共端点。** 只要那条路由配了 `baseURL`，它就是唯一的去处；不是 `http(s)://` 开头的绝对地址就直接报「没能读取额度」，一个请求都不发。漏掉 scheme 是最常见的写法错误，而「没配」和「配错了」如果同义，配错就等于把私有网关的 key 送去 `api.deepseek.com`。没配 `baseURL` 才走默认值。额度请求也一律拒绝跟随重定向：跨源重定向会丢掉 `Authorization`，却不会丢掉 OpenCode 网关要的 `x-api-key`。浏览器通过 Harness Connection RPC 的 `/dsh-provider-quota` channel 拿到标准化结果；Connection 会先校验 Host / Origin / Fetch-Site 和浏览器会话。任何 access token、API key、账户 id 和上游原始响应都不会发到浏览器。
 
 Codex 与 OpenCode 的接口都是未公开契约：上游改动时面板会说「没能读取额度」，不影响模型请求；点「刷新」可以重试。若上游本来就没给这个账户返回额度窗口，面板说明的是这件事，而不是一句「重试」——重试改变不了它。
 
-从别的机器访问时，先让 Web profile 的 `trustedHosts` 接受该 authority，并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。**到最新的 0.1.3-alpha.1 为止**，非 loopback 页面的 settings scope 仍建在内存里，卡片渲染不出内容——额度胶囊照常，设置卡片还没有能用的发布版。
+从别的机器访问时，先让 Web profile 的 `trustedHosts` 接受该 authority，并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。**到最新的 0.1.3-alpha.1 为止**，非 loopback 页面的 settings scope 仍建在内存里；这个插件不登记 section，所以不受影响，额度胶囊照常。
 
 ## 故障排查
 

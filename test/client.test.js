@@ -299,8 +299,8 @@ describe('usage card state', () => {
     const face = ctx.registrations[0].options.inject()
     await new Promise(resolve => setImmediate(resolve))
     const state = face.hooks.quota.getSnapshot()
-    assert.equal(state.routes.codex.state, 'ready')
-    assert.deepEqual(state.routes.codex.usage, result.value)
+    assert.equal(state.routes['openai-codex'].state, 'ready')
+    assert.deepEqual(state.routes['openai-codex'].usage, result.value)
     const usageCall = calls.find(call => call.method === 'usage')
     assert.deepEqual(usageCall, {
       channel: '/dsh-provider-quota',
@@ -357,7 +357,7 @@ describe('usage card state', () => {
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(usageCalls.length, 2)
     assert.deepEqual(usageCalls[1], { provider: 'openai-codex', force: false }, 'polling preserves the shared Host cache')
-    assert.equal(face.hooks.quota.getSnapshot().routes.codex.usage.windows[0].remainingPercent, 87)
+    assert.equal(face.hooks.quota.getSnapshot().routes['openai-codex'].usage.windows[0].remainingPercent, 87)
     assert.equal(timers.length, 2, 'a settled poll schedules exactly one successor')
 
     ctx.disposeEffects()
@@ -400,7 +400,7 @@ describe('usage card state', () => {
     await new Promise(resolve => setImmediate(resolve))
     const face = ctx.registrations[0].options.inject()
     const panel = () => flatten(exports.windowsPanelElement(
-      face.hooks.quota.getSnapshot().routes.codex, exports.TEXT.zh, () => {}, 'zh'))
+      face.hooks.quota.getSnapshot().routes['openai-codex'], exports.TEXT.zh, () => {}, 'zh'))
 
     const ready = panel()
     assert.ok(ready.text.includes('88'), 'the settled read shows the 5h window')
@@ -443,11 +443,11 @@ describe('usage card state', () => {
     const face = ctx.registrations[0].options.inject()
     await new Promise(resolve => setImmediate(resolve))
     const state = face.hooks.quota.getSnapshot()
-    assert.equal(state.routes.codex.state, 'ready')
-    assert.equal(state.routes.codex.failure, undefined)
-    assert.deepEqual(state.routes.codex.usage.windows, [])
-    assert.equal(exports.weeklyWindowOf(state.routes.codex.usage), undefined)
-    assert.equal(exports.quotaChipReady(state.routes.codex), false, 'the capsule stays muted with no number to show')
+    assert.equal(state.routes['openai-codex'].state, 'ready')
+    assert.equal(state.routes['openai-codex'].failure, undefined)
+    assert.deepEqual(state.routes['openai-codex'].usage.windows, [])
+    assert.equal(exports.weeklyWindowOf(state.routes['openai-codex'].usage), undefined)
+    assert.equal(exports.quotaChipReady(state.routes['openai-codex']), false, 'the capsule stays muted with no number to show')
   })
 
   test('maps a Host refusal to localized copy without exposing server detail', async () => {
@@ -461,8 +461,8 @@ describe('usage card state', () => {
     const face = ctx.registrations[0].options.inject()
     await new Promise(resolve => setImmediate(resolve))
     const state = face.hooks.quota.getSnapshot()
-    assert.equal(state.routes.codex.failure, 'signed-out')
-    const copy = exports.quotaFailureText(state.routes.codex.failure, 'zh')
+    assert.equal(state.routes['openai-codex'].failure, 'signed-out')
+    const copy = exports.quotaFailureText(state.routes['openai-codex'].failure, 'zh')
     assert.match(copy, /登录记录缺失/u)
     assert.doesNotMatch(copy, /MUST_NOT_RENDER/u)
   })
@@ -479,23 +479,54 @@ describe('usage card state', () => {
     })
     exports.apply(ctx)
     const face = ctx.registrations[0].options.inject()
-    assert.equal(face.hooks.quota.getSnapshot().routes.codex.state, 'loading')
+    assert.equal(face.hooks.quota.getSnapshot().routes['openai-codex'].state, 'loading')
     ctx.disposeEffects()
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(aborted, true)
-    assert.equal(face.hooks.quota.getSnapshot().routes.codex.state, 'loading', 'disposed controller publishes no late failure')
+    assert.equal(face.hooks.quota.getSnapshot().routes['openai-codex'].state, 'loading', 'disposed controller publishes no late failure')
   })
 })
 
 describe('provider route state', () => {
-  test('maps provider ids onto the three route slots', () => {
-    const { PROVIDER_ROUTES } = materialize().exports
-    assert.equal(PROVIDER_ROUTES['openai-codex'], 'codex')
-    assert.equal(PROVIDER_ROUTES['opencode-go'], 'opencode')
-    assert.equal(PROVIDER_ROUTES['opencode-go-extra'], 'opencode')
-    assert.equal(PROVIDER_ROUTES['deepseek-official'], 'deepseek')
-    assert.equal(PROVIDER_ROUTES['deepseek'], 'deepseek')
-    assert.equal(PROVIDER_ROUTES['glm-5.3'], undefined)
+  test('the two accounts of one provider family keep separate numbers', async () => {
+    // `opencode-go` and `opencode-go-extra` render the same three windows, so
+    // it is tempting to give them one state slot. They are two accounts: one
+    // slot means whichever loaded first answers for both. Asserting the
+    // mapping object would only prove it was copied correctly out of src, so
+    // this reads both accounts and pins that each kept its own number.
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    ctx.connection.rpc.call = async (_channel, _method, payload) => ({
+      ok: true,
+      value: {
+        kind: 'windows',
+        provider: payload.provider,
+        windows: [{ id: '5h', usedPercent: payload.provider === 'opencode-go' ? 11 : 77, remainingPercent: 1 }],
+        fetchedAt: '2026-08-20T12:00:00.000Z',
+      },
+    })
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    await face.refreshUsage('opencode-go')
+    await face.refreshUsage('opencode-go-extra')
+    const state = face.hooks.quota.getSnapshot()
+    assert.equal(state.routes['opencode-go'].usage.windows[0].usedPercent, 11)
+    assert.equal(state.routes['opencode-go-extra'].usage.windows[0].usedPercent, 77)
+  })
+
+  test('a provider this plugin does not answer for gets no slot and costs no read', async () => {
+    const { exports } = materialize()
+    const ctx = fakeContext()
+    const calls = []
+    ctx.connection.rpc.call = async (_channel, _method, payload) => {
+      calls.push(payload.provider)
+      return { ok: false, error: { code: 'unavailable' } }
+    }
+    exports.apply(ctx)
+    const face = ctx.registrations[0].options.inject()
+    await face.loadUsage('glm-5.3', false)
+    assert.equal(face.hooks.quota.getSnapshot().routes['glm-5.3'], undefined)
+    assert.equal(calls.includes('glm-5.3'), false, 'an unanswerable provider must not reach the host')
   })
 
   test('each provider slot loads independently and keeps its own data', async () => {
@@ -538,10 +569,10 @@ describe('provider route state', () => {
     await face.refreshUsage('opencode-go')
     await face.refreshUsage('deepseek-official')
     const state = face.hooks.quota.getSnapshot()
-    assert.equal(state.routes.opencode.state, 'ready')
-    assert.equal(state.routes.deepseek.state, 'ready')
-    assert.equal(state.routes.opencode.usage.kind, 'windows')
-    assert.equal(state.routes.deepseek.usage.kind, 'balance')
+    assert.equal(state.routes['opencode-go'].state, 'ready')
+    assert.equal(state.routes['deepseek-official'].state, 'ready')
+    assert.equal(state.routes['opencode-go'].usage.kind, 'windows')
+    assert.equal(state.routes['deepseek-official'].usage.kind, 'balance')
     assert.deepEqual(calls.slice(-2).sort(), ['deepseek-official', 'opencode-go'])
   })
 
@@ -574,8 +605,8 @@ describe('provider route state', () => {
     })
     await Promise.all([first, second])
     const state = face.hooks.quota.getSnapshot()
-    assert.equal(state.routes.opencode.state, 'ready')
-    assert.equal(state.routes.opencode.usage.windows[0].remainingPercent, 90)
+    assert.equal(state.routes['opencode-go'].state, 'ready')
+    assert.equal(state.routes['opencode-go'].usage.windows[0].remainingPercent, 90)
   })
 
   test('capsule copy shows used, three OpenCode windows, and DeepSeek balance', () => {
@@ -736,14 +767,21 @@ describe('the chip component', () => {
    * chip is one of the pieces AGENTS.md warns is captured but never called;
    * calling it is the only way a rename inside it goes red here rather than in
    * a browser.
+   *
+   * `useEffect` collects rather than discards. Stubbed to a no-op it kept the
+   * chip's one decision — whether the provider now on screen still needs
+   * reading — out of the suite entirely, which is how a switch between the two
+   * accounts of one family came to show the first one's numbers with every
+   * test green.
+   * @param {(() => void)[]} effects - collector the caller runs after the render.
    * @returns {object} the fake module the client module table hands over.
    */
-  function fakeReact() {
+  function fakeReact(effects) {
     return {
       createElement: (type, props, ...children) => ({ type, props, children }),
       useState: initial => [initial, () => {}],
       useCallback: fn => fn,
-      useEffect: () => {},
+      useEffect: fn => { effects.push(fn) },
       useRef: () => ({ current: null }),
       useSyncExternalStore: (_subscribe, read) => read(),
     }
@@ -755,7 +793,8 @@ describe('the chip component', () => {
    * @returns {{text: string}} what the chip renders.
    */
   function renderChip(slot, provider = 'openai-codex') {
-    const { exports } = materialize({ react: fakeReact() })
+    const effects = []
+    const { exports } = materialize({ react: fakeReact(effects) })
     const ctx = fakeContext()
     exports.apply(ctx)
     const { component } = ctx.registrations[0]
@@ -764,13 +803,17 @@ describe('the chip component', () => {
       subscribe: () => () => {},
       ensureLoaded: () => {},
     }
-    return flatten(component({
-      useQuota: select => select({ language: 'zh', routes: { codex: slot, opencode: slot, deepseek: slot } }),
+    const routes = {}
+    for (const id of ['openai-codex', 'opencode-go', 'opencode-go-extra', 'deepseek-official', 'deepseek']) routes[id] = slot
+    const tree = component({
+      useQuota: select => select({ language: 'zh', routes: routes }),
       modelDirectoryFor: () => directory,
       sessionId: 'session-1',
       loadUsage: () => Promise.resolve(),
       refreshUsage: () => {},
-    }))
+    })
+    effects.forEach(run => run())
+    return flatten(tree)
   }
 
   const READY = {
@@ -793,6 +836,65 @@ describe('the chip component', () => {
   test('a provider this plugin does not answer for renders nothing at all', () => {
     // Showing Codex numbers beside a GLM session would be worse than empty.
     assert.equal(renderChip(READY, 'glm-5.3').text, '')
+  })
+
+  test('switching to the other account of a family reads it instead of reusing the first', async () => {
+    // The regression the per-provider slots exist for, driven through the real
+    // controller because the bug lived between the two: both routes draw the
+    // same panel, so a slot keyed by panel shape was already `ready` when the
+    // session moved to the second account. The chip's effect saw a non-idle
+    // slot, read nothing, and the header kept the first account's number
+    // beside the second account's session — with no failure anywhere.
+    const effects = []
+    const { exports } = materialize({ react: fakeReact(effects) })
+    const ctx = fakeContext()
+    const asked = []
+    ctx.connection.rpc.call = async (_channel, _method, payload) => {
+      asked.push(payload.provider)
+      return {
+        ok: true,
+        value: {
+          kind: 'windows',
+          provider: payload.provider,
+          windows: [{ id: '5h', usedPercent: payload.provider === 'opencode-go' ? 11 : 77, remainingPercent: 1 }],
+          fetchedAt: '2026-08-20T12:00:00.000Z',
+        },
+      }
+    }
+    let onScreen = 'opencode-go'
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current: { provider: onScreen, model: 'm' }, status: 'ready' }),
+        subscribe: () => () => {},
+      },
+      load: async () => {},
+    }
+    ctx.get = name => (name === 'connection' ? ctx.connection
+      : name === 'modelDirectories' ? { directoryFor: () => directory }
+      : undefined)
+    exports.apply(ctx)
+    const { options, component } = ctx.registrations[0]
+    const face = options.inject()
+    /** @returns {Promise<string>} what the header shows once this paint's effects have settled. */
+    const paint = async () => {
+      effects.length = 0
+      const tree = component({
+        useQuota: select => select(face.hooks.quota.getSnapshot()),
+        modelDirectoryFor: face.modelDirectoryFor,
+        sessionId: 'session-1',
+        loadUsage: face.loadUsage,
+        refreshUsage: face.refreshUsage,
+      })
+      effects.forEach(run => run())
+      await new Promise(resolve => { setTimeout(resolve, 0) })
+      return flatten(tree).text
+    }
+    await paint()
+    assert.match(await paint(), /5h 11%/u, 'the account the session is actually on')
+    onScreen = 'opencode-go-extra'
+    await paint()
+    assert.match(await paint(), /5h 77%/u, 'the second account must be read, not the first one reused')
+    assert.ok(asked.includes('opencode-go-extra'), 'the host was never asked about the provider on screen')
   })
 })
 
