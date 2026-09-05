@@ -554,8 +554,10 @@ function lineLookup(text) {
  * Source exemptions are read from {@link commentsOnly}, and the Markdown form
  * must own its line, so neither a quoted marker nor an inline-code example of
  * the syntax can sign anything. Documenting the mechanism must not switch the
- * gate off for the document doing the documenting — the Markdown half had
- * exactly that hole.
+ * gate off for the document doing the documenting, and both halves of that
+ * were real: read from the raw text instead, every gate's own error string —
+ * "sign the line `// gate-exempt: <reason>`" — exempts the line it is printed
+ * from, and AGENTS.md's paragraph describing the syntax exempts AGENTS.md.
  * @param {string} text - raw file text.
  * @param {string} gate - gate id the exemption must name.
  * @param {'js'|'md'} [kind='js'] - which comment syntax to read.
@@ -1584,7 +1586,10 @@ export function parseTap(tap) {
 /**
  * Run the suite and refuse to accept anything but a real, complete pass.
  *
- * Three independent mechanisms, because each alone is bypassable:
+ * The runner it fronts reports success even when whole suites were skipped:
+ * a `describe(name, { skip }, fn)` never expands, so the tests inside it enter
+ * neither `# tests` nor `# skipped` and the summary still prints `# skipped 0`
+ * and exits 0. Three independent mechanisms, because each alone is bypassable:
  *
  *  - ANY skip, todo, cancellation or `not ok` line fails. Costs nothing to
  *    maintain, and it is the only one that sees a suite newly gated off.
