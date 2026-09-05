@@ -107,20 +107,23 @@ const TEST_COMMAND = 'node scripts/check.mjs'
  * exactly the drift this shape prevents. It also means no count is written
  * down anywhere: the runner prints what it computed.
  *
- * These two verify that every `packages/...` path and symbol the documents
- * cite exists in the deepseek-harness tree, and refuse to report green when no
- * harness checkout is reachable. CI has none, so they run locally.
+ * Each of these resolves something against the deepseek-harness tree — the
+ * `packages/...` paths and symbols the documents cite, and the Remote failure
+ * codes `src/client.js` branches on — and each refuses to report green when no
+ * harness checkout is reachable. CI has none, so they run locally. Do not
+ * write their number in prose: the runner prints what it computed.
  */
 const HARNESS_ONLY_GATES = ['doc-refs', 'doc-symbols', 'remote-codes']
 
 /**
  * The one skip reason a bare run is allowed to produce.
  *
- * `test/{adapter,bin,settings,store}.test.js` each guard a `describe` on
- * whether the peer dependencies resolve, so that reading the repository
+ * `test/host.test.js` and `test/credentials.test.js` guard their `describe`s
+ * on whether the peer dependencies resolve, so that reading the repository
  * without a node_modules tree does not produce a wall of red. In CI — which
- * cannot install those peers, one of them 404s — those four skips are the
- * expected state and everything else is a suite someone gated off.
+ * cannot install those peers, one of them 404s — those skips are the expected
+ * state and everything else is a suite someone gated off. Matched on the
+ * reason, not on a list of names, so no count belongs here either.
  */
 const PEER_SKIP_REASON = /peer dependencies are not installed/u
 
@@ -1692,7 +1695,7 @@ export function collectSuiteViolations(root, { bare = false } = {}) {
     violations.push(`${value} test(s) reported as ${label}: ${NOT_A_PASS[label]}.`)
   }
   for (const { name, reason } of skipped) {
-    // In bare mode the four peer-dependency guards are the reason the suite
+    // In bare mode the peer-dependency guards are the reason the suite
     // runs at all, so THEY are expected — but only they. Matching on the
     // reason rather than on a recorded list of suite names means CI needs no
     // second number to maintain, and a suite newly gated off for any other
@@ -1702,7 +1705,7 @@ export function collectSuiteViolations(root, { bare = false } = {}) {
       `"${name}" was skipped (${reason || 'no reason given'})${bare ? ', and the reason is not a missing peer dependency' : ''}. `
       + 'A skipped `describe` subtree hides every test inside it and is counted in neither `# tests` nor `# skipped`, so the suite still reports success. '
       + (bare
-        ? 'In bare mode the four peer-dependency guards are expected; nothing else is. Fix the test, or state the missing peer dependency as its reason.'
+        ? 'In bare mode the peer-dependency guards are expected; nothing else is. Fix the test, or state the missing peer dependency as its reason.'
         : 'Make the dependency resolvable (`ln -s ~/.dsh/profiles/node_modules node_modules`) and run again.'),
     )
   }
@@ -1743,7 +1746,11 @@ function exemptableFiles(root) {
  * @returns {string[]} one line per exemption, malformed ones included.
  */
 export function listExemptions(root) {
-  const ids = ['service-reads', 'deps', 'doc-refs', 'doc-symbols']
+  // Every gate that reads an exemption. `remote-codes` was missing, so one
+  // signed there was honoured by the gate and printed by nothing — an
+  // exemption in force that no run announced, which is the one state this
+  // listing exists to prevent.
+  const ids = ['service-reads', 'deps', 'doc-refs', 'doc-symbols', 'remote-codes']
   const found = []
   for (const { path, kind } of exemptableFiles(root)) {
     const text = readText(root, path)

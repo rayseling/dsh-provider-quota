@@ -48,9 +48,9 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 
 `node --test` 单独跑**会撒谎**。裸检出里它照样 `# skipped 0`、退出码 0，只是少数了一批：
 `describe(name, { skip }, fn)` 不展开子树，整个 suite 记成一行 `ok N - … # SKIP`，
-里面的测试**既不进 `# tests` 也不进 `# skipped`**。完整检出是 237 条（权威数字在 `scripts/expected.json`）。
+里面的测试**既不进 `# tests` 也不进 `# skipped`**。完整检出的条数以 `scripts/expected.json` 为准。
 
-- 那两份 skip 守卫（`settings`/`credentials`）是给别人在裸检出里读代码用的，
+- 那两份 skip 守卫（`host`/`credentials`）是给别人在裸检出里读代码用的，
   不是给本仓库改动留的口子。**提交前必须零 skip。**
 - `{ todo: '...' }` 同样禁止：它照常跑、照常抛，而摘要报 `# fail 0`。门同时看
   `# todo`、`# cancelled` 和任何一行 `not ok`。

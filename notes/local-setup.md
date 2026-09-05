@@ -50,7 +50,7 @@ ls -l ~/.dsh/profiles/web/node_modules/dsh-provider-quota/src/client.js
 
 `test/client.test.js` 把 `src/client.js` 当经典脚本执行，断言模块表契约（handoff id、
 只 require `react` 和 `@deepseek-ai/dsh-client-ui-primitives`、`inject` 为空）、
-会话胶囊的注册、三个 provider 槽各自独立的读取状态机、以及归一化与文案的纯函数。
+会话胶囊的注册、每个 provider 各自独立的读取状态机、以及归一化与文案的纯函数。
 它**不** import `src/index.js`——那样会把 pi-ai 和凭据层一起拖进来，裸检出里整个文件直接加载失败（不是 skip）。
 包名和 handoff id 的一致由 `identity` 门盯着，不靠这份测试。
 

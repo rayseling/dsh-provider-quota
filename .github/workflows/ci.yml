@@ -1,22 +1,25 @@
-# Every gate except the two that need a harness checkout, plus the tests a
+# Every gate except the ones that need a harness checkout, plus the tests a
 # bare checkout can run.
 #
-# NO COUNT IS WRITTEN HERE, on purpose. `--bare` derives what it runs by
-# EXCLUDING `doc-refs` and `doc-symbols`, and prints the numbers itself, so a
-# gate added later is in CI by default and no number in this file can go stale.
-# An earlier version of this comment said "five of nine" in four separate
-# places; by the time anyone read it there were ten gates.
+# NO COUNT AND NO NAMES ARE WRITTEN HERE, on purpose. `--bare` derives what it
+# runs by EXCLUDING the harness-only gates, and prints both the names and the
+# numbers itself, so a gate added later is in CI by default and nothing in this
+# file can go stale. An earlier version of this comment said "five of nine" in
+# four separate places; by the time anyone read it there were ten gates. The
+# version after that named the two exclusions, and went stale the day a third
+# one arrived — while still claiming, right here, to be drift-proof.
 #
-# WHY THOSE TWO ARE OUT. They verify that every `packages/...` path and every
-# symbol name the documents cite really exists in the deepseek-harness tree.
-# No harness checkout is reachable from here, and both refuse to report green
+# WHY ANY GATE IS OUT. Each of them resolves something against the
+# deepseek-harness tree: the `packages/...` paths and the symbol names the
+# documents cite, and the Remote failure codes the client branches on. No
+# harness checkout is reachable from here, and each refuses to report green
 # without one — reporting a check that never ran is the failure this whole gate
 # set exists to prevent. They run locally, where the harness sits beside the
 # checkout.
 #
 # WHY NO `npm install`. The manifest is not installable: `@deepseek-ai/dsh-llm-pi-ai`
 # has an unpublished transitive peer that 404s, and `--legacy-peer-deps` does
-# not help. Four test files guard their `describe` on whether the peers
+# not help. Two test files guard their `describe`s on whether the peers
 # resolve, so a bare run executes a subset of the suite and skips the guarded
 # ones — no count here either, for the reason above; `--bare` does not pin the
 # executed number, because it depends on which peers resolve. `--bare` accepts

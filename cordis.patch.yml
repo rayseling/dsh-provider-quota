@@ -1,7 +1,8 @@
 # dsh-provider-quota bundle patch: insert the account-quota read (Codex 5h/7d,
 # OpenCode Go 5h/7d/1m, DeepSeek balance) on an authenticated Connection
-# channel, plus its Settings card and session-header chip. It registers no
-# model route and changes no default: `openai-codex` is served by the harness's
+# channel, plus the session-header chip that shows it. It configures nothing,
+# so there is no Settings card. It registers no model route and changes no
+# default: `openai-codex` is served by the harness's
 # own llm-pi-ai, configured under `llm-pi-ai.providers.openai-codex` in
 # settings.yaml. Sign-in lives in the credential record llm-pi-ai reads — see
 # the README.
