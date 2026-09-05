@@ -30,6 +30,17 @@ export const OPENAI_CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usag
  */
 export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
 
+/**
+ * Static `x-opencode-session` for the quota read.
+ *
+ * The OpenCode gateway errors on requests without this header from
+ * 2026-09-05. It asks for a stable id per conversation; a quota poll is not a
+ * conversation, so a deployment-fixed id is all this read can honestly send —
+ * it satisfies presence, not routing. Deliberately NOT the id the model route
+ * sends, so poller traffic and inference traffic stay separable upstream.
+ */
+const OPENCODE_SESSION_ID = 'd8666b3e-6cd6-47d3-bec4-182b5c3513a5'
+
 /** DeepSeek official balance endpoint; the path is appended to the route's baseURL. */
 export const DEEPSEEK_PUBLIC_BASE_URL = 'https://api.deepseek.com'
 
@@ -570,6 +581,7 @@ export async function fetchOpencodeUsage(options) {
         Accept: 'application/json',
         Authorization: 'Bearer ' + options.apiKey,
         'x-api-key': options.apiKey,
+        'x-opencode-session': OPENCODE_SESSION_ID,
         // The gateway rejects recognizable CLI agents; present as a browser.
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       },

@@ -263,6 +263,28 @@ describe('API-key provider fetches', () => {
     assert.doesNotMatch(JSON.stringify(usage), /MUST_STAY/u)
   })
 
+  test('OpenCode: every read carries the same x-opencode-session, and it is not the key', async () => {
+    // The gateway errors on a read without this header, and a wrong value is
+    // refused the same way a missing one is. Both failures land as a chip
+    // warning, never as a wrong number, so nothing else in this repository
+    // would notice the header being dropped.
+    const seen = []
+    const read = async () => fetchOpencodeUsage({
+      endpoint: OPENCODE_GO_BASE_URL,
+      apiKey: 'sk_MUST_STAY_HOST_SIDE',
+      now: () => NOW,
+      fetch: async (url, options) => {
+        seen.push(options.headers['x-opencode-session'])
+        return new Response(JSON.stringify({ usage: { rolling: { percent: 10 } } }), { status: 200 })
+      },
+    })
+    await read()
+    await read()
+    assert.match(seen[0], /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u)
+    assert.equal(seen[1], seen[0])
+    assert.doesNotMatch(seen[0], /MUST_STAY/u)
+  })
+
   test('OpenCode: 403 means no subscription, 404 means the endpoint moved', async () => {
     await assert.rejects(
       fetchOpencodeUsage({ endpoint: OPENCODE_GO_BASE_URL, apiKey: 'k', fetch: async () => new Response('denied', { status: 403 }) }),
