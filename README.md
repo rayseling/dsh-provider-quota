@@ -10,13 +10,13 @@
 |---|---|
 | Codex 模型请求、OAuth 刷新、模型目录 | 宿主的 `llm-pi-ai` + `@earendil-works/pi-ai` |
 | 凭据存放与跨进程互斥 | 宿主的 credentials seam（`llm-pi-ai/openai-codex` 这条记录） |
-| 本插件自己写的 | 把三个上游的额度/余额归一成同一个 union 的 Connection RPC（只出标准化数据，凭据一律留在主机）+ 一张只读的 Settings 卡片和一个会话头部额度胶囊（手写的经典脚本，无打包步骤） |
+| 本插件自己写的 | 把三个上游的额度/余额归一成同一个 union 的 Connection RPC（只出标准化数据，凭据一律留在主机）+ 一个会话头部额度胶囊（手写的经典脚本，无打包步骤） |
 
 凭据永远不进浏览器，也不进 `settings.yaml`。额度读取走 Harness Connection 统一的请求检查和浏览器会话认证，不另开 HTTP 路由。
 
 ## 安装
 
-需要 **dsh 0.1.2-alpha.1 或更新**：凭据记录（`recordKeyFor`、`modifyRecord`）和 Connection 的浏览器会话认证是这个版本定的；设置 section 的 service API 在 alpha.2 定型，卡片要靠它才能被派发。
+需要 **dsh 0.1.2-alpha.1 或更新**：凭据记录（`recordKeyFor`、`modifyRecord`）和 Connection 的浏览器会话认证是这个版本定的。这一版不登记 settings section，所以不再需要它的 service API。
 
 ```sh
 dsh plugin --profile web add file:/path/to/dsh-provider-quota
@@ -43,7 +43,7 @@ llm-pi-ai:
 
 ## 登录
 
-**这一版没有界面能替你跑登录流。** `llm-pi-ai` 注册了 authorization 流，但 0.1.3-alpha.1 里没有任何 Web / CLI / SDK / ACP 表面会发起它。所以目前只能手写凭据记录。
+**这一版没有界面能替你跑登录流。** `llm-pi-ai` 注册了 authorization 流，但到 0.1.3-alpha.2 为止没有任何 Web / CLI / SDK / ACP 表面会发起它。所以目前只能手写凭据记录。
 
 写进 `$DSH_HOME/.credentials.yaml`（文件权限必须 0600，属主之外可读会被拒绝）：
 
@@ -97,7 +97,7 @@ records:
 
 Codex 与 OpenCode 的接口都是未公开契约：上游改动时面板会说「没能读取额度」，不影响模型请求；点「刷新」可以重试。若上游本来就没给这个账户返回额度窗口，面板说明的是这件事，而不是一句「重试」——重试改变不了它。
 
-从别的机器访问时，先让 Web profile 的 `trustedHosts` 接受该 authority，并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。**到最新的 0.1.3-alpha.1 为止**，非 loopback 页面的 settings scope 仍建在内存里；这个插件不登记 section，所以不受影响，额度胶囊照常。
+从别的机器访问时，先让 Web profile 的 `trustedHosts` 接受该 authority，并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。**到最新的 0.1.3-alpha.2 为止**，非 loopback 页面的 settings scope 仍建在内存里；这个插件不登记 section，所以不受影响，额度胶囊照常。
 
 ## 故障排查
 

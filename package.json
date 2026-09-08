@@ -35,7 +35,7 @@
     "@deepseek-ai/dsh-launch-environment": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-llm-pi-ai": ">=0.1.2-alpha.1",
-    "@earendil-works/pi-ai": "^0.84.2"
+    "@earendil-works/pi-ai": "^0.85.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "*",
