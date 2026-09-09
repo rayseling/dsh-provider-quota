@@ -18,6 +18,8 @@
 
 需要 **dsh 0.1.2-alpha.1 或更新**：凭据记录（`recordKeyFor`、`modifyRecord`）和 Connection 的浏览器会话认证是这个版本定的。这一版不登记 settings section，所以不再需要它的 service API。
 
+**0.1.5-alpha.1 例外：胶囊照常出现（失败态读「额度 --」），但永远读不到额度。** 那一版的 Connection 在 `rpc-host.ts` 里用属性访问器读自己没 `inject` 的 `webServer`，第三方插件的 `rpc.handle` 在 channel 落地前就抛错（宿主自己的插件只走 `rpc.intercept`，不经过这条路，所以没人发现）。抛错在 `ctx.inject` 建出的子 fiber 里，宿主照常启动、客户端照常加载，只有那条 RPC 一直打到静态兜底——面板永远说「没能读取额度，请稍后重试。」，点刷新也没用。宿主侧把那处读改成 `ctx.get('webServer')` 即可；0.1.3-alpha.2 及更早没有这个问题——让那段代码够不到 `webServer` 的改动只进了 0.1.5-alpha.1。
+
 ```sh
 dsh plugin --profile web add file:/path/to/dsh-provider-quota
 ```
@@ -43,7 +45,7 @@ llm-pi-ai:
 
 ## 登录
 
-**这一版没有界面能替你跑登录流。** `llm-pi-ai` 注册了 authorization 流，但到 0.1.3-alpha.2 为止没有任何 Web / CLI / SDK / ACP 表面会发起它。所以目前只能手写凭据记录。
+**这一版没有界面能替你跑登录流。** `llm-pi-ai` 注册了 authorization 流，但到 0.1.5-alpha.1 为止没有任何 Web / CLI / SDK / ACP 表面会发起它。所以目前只能手写凭据记录。
 
 写进 `$DSH_HOME/.credentials.yaml`（文件权限必须 0600，属主之外可读会被拒绝）：
 
@@ -97,13 +99,13 @@ records:
 
 Codex 与 OpenCode 的接口都是未公开契约：上游改动时面板会说「没能读取额度」，不影响模型请求；点「刷新」可以重试。若上游本来就没给这个账户返回额度窗口，面板说明的是这件事，而不是一句「重试」——重试改变不了它。
 
-从别的机器访问时，先让 Web profile 的 `trustedHosts` 接受该 authority，并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。**到最新的 0.1.3-alpha.2 为止**，非 loopback 页面的 settings scope 仍建在内存里；这个插件不登记 section，所以不受影响，额度胶囊照常。
+从别的机器访问时，先让 Web profile 的 `trustedHosts` 接受该 authority，并用启动 URL 完成浏览器会话登录——认证后额度胶囊就可用。**到最新的 0.1.5-alpha.1 为止**，非 loopback 页面的 settings scope 仍建在内存里；这个插件不登记 section，所以不受影响，额度胶囊照常。
 
 ## 故障排查
 
 ### 额度读不到
 
-面板直接说原因：登录记录缺失、登录失效、超时、限流、上游没返回窗口。「登录记录缺失/失效」指的是上面那条 grant 记录——重写它，重启 dsh。胶囊本身不见，先确认宿主声明了 `conversation.session.header.utilities` 插槽，再看浏览器控制台有没有 `[dsh-provider-quota]` 开头的行。
+面板直接说原因：登录记录缺失、登录失效、超时、限流、上游没返回窗口。「登录记录缺失/失效」指的是上面那条 grant 记录——重写它，重启 dsh。**面板一直说「没能读取额度」、点刷新也永远不变**时，先看 dsh 终端有没有 `cannot get property "webServer" without inject`——那是安装一节那条 0.1.5-alpha.1 的宿主 bug，重试改变不了它。胶囊本身不见是另一回事：先确认宿主声明了 `conversation.session.header.utilities` 插槽，再看浏览器控制台有没有 `[dsh-provider-quota]` 开头的行。
 
 ### 卡住了：`.lock` 残留
 
@@ -128,7 +130,7 @@ dsh plugin --profile web remove dsh-provider-quota
 
 ## 给改代码的人
 
-先看 **[AGENTS.md](./AGENTS.md)**：那里是七条**出错时不报错**的坑、`npm test` 的九道门、
+先看 **[AGENTS.md](./AGENTS.md)**：那里是**出错时不报错**的坑、`npm test` 的九道门、
 以及每道门盖不到的地方。每条坑各有一篇完整复盘在 [`notes/postmortems/`](./notes/postmortems/)，
 设计理由在 [`notes/implemented/`](./notes/implemented/README.md)，
 本地安装与迭代的步骤在 [`notes/local-setup.md`](./notes/local-setup.md)。
