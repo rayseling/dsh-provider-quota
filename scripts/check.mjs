@@ -852,7 +852,7 @@ export function collectDocRefViolations(root, harnessRoot) {
  *
  * This gate exists because AGENTS.md shipped `SettingsRuntime.register`, a
  * class that has never existed under either name in either tree; the real one
- * is `SettingsProvider`. The mechanism around it was described correctly,
+ * was `SettingsProvider` (`SettingsForms` since dsh 0.1.7-alpha.1). The mechanism around it was described correctly,
  * which is exactly why no reader caught it.
  *
  * Local sources are searched with comments stripped. Otherwise the gate is

@@ -16,6 +16,7 @@ import {
   normalizeOpencodeGoUsage,
   normalizeOpenAICodexUsage,
   DEEPSEEK_PUBLIC_BASE_URL,
+  OPENAI_CODEX_USAGE_METHOD,
   OPENAI_CODEX_USAGE_URL,
   OPENCODE_GO_BASE_URL,
 } from '../src/usage.js'
@@ -243,6 +244,23 @@ describe('shipped bases compose into the endpoints they are meant to reach', () 
     )
   })
 
+  test('a DeepSeek Messages root reads the balance at the API root it is mounted under', async () => {
+    // Since dsh 0.1.7-alpha.1 the harness reads this route's `baseURL`, and
+    // `DEEPSEEK_BASE_URL`, as the root its Messages requests are built on:
+    // officially https://api.deepseek.com/anthropic, with a final /v1 reused
+    // rather than doubled. The balance endpoint is not under that mount, so a
+    // configured value that follows the harness's own docs used to send the
+    // read to /anthropic/user/balance. host.test.js feeds the adapter's real
+    // default in; these are the shapes around it.
+    const read = endpoint => requestedUrl(fetchDeepSeekBalance, endpoint, JSON.stringify({ is_available: true, balance_infos: [] }))
+    assert.equal(await read('https://api.deepseek.com/anthropic/v1'), 'https://api.deepseek.com/user/balance')
+    assert.equal(await read('https://gateway.example/deepseek/anthropic'), 'https://gateway.example/deepseek/user/balance')
+    // Any other path is a gateway whose layout this plugin cannot know: it is
+    // used as written, and the origin never changes either way.
+    assert.equal(await read('https://deepseek.internal.example/v1'), 'https://deepseek.internal.example/v1/user/balance')
+    assert.equal(await read('https://gateway.example/anthropic-proxy'), 'https://gateway.example/anthropic-proxy/user/balance')
+  })
+
 })
 
 describe('API-key provider fetches', () => {
@@ -451,26 +469,32 @@ describe('provider usage service and RPC', () => {
     assert.equal(secondValue.windows[0].usedPercent, 77)
   })
 
-  test('the RPC validates the provider payload and keeps the legacy shape for stale callers', async () => {
+  test('the RPC validates the provider payload, and a request that names no route is refused', async () => {
+    const asked = []
     const service = {
-      get: async provider => provider === 'openai-codex'
-        ? { kind: 'windows', provider: 'openai-codex', planType: 'plus', windows: [{ id: '7d', usedPercent: 3, remainingPercent: 97, resetsAt: 1_788_134_407 }], fetchedAt: '2026-08-20T12:00:00.000Z' }
-        : { kind: 'none', provider },
+      get: async (provider) => {
+        asked.push(provider)
+        return provider === 'openai-codex'
+          ? { kind: 'windows', provider: 'openai-codex', planType: 'plus', windows: [{ id: '7d', usedPercent: 3, remainingPercent: 97, resetsAt: 1_788_134_407 }], fetchedAt: '2026-08-20T12:00:00.000Z' }
+          : { kind: 'none', provider }
+      },
     }
     const rpc = createProviderUsageRpc(service)
     const signal = new AbortController().signal
-    assert.equal((await rpc('usage', { provider: 'BAD KEY' }, signal)).error.code, 'invalid-request')
-    assert.equal((await rpc('usage', { provider: 'openai-codex', extra: 1 }, signal)).error.code, 'invalid-request')
-    const fresh = await rpc('usage', { provider: 'openai-codex' }, signal)
+    assert.equal((await rpc(OPENAI_CODEX_USAGE_METHOD, { provider: 'BAD KEY' }, signal)).error.code, 'invalid-request')
+    assert.equal((await rpc(OPENAI_CODEX_USAGE_METHOD, { provider: 'openai-codex', extra: 1 }, signal)).error.code, 'invalid-request')
+    const fresh = await rpc(OPENAI_CODEX_USAGE_METHOD, { provider: 'openai-codex' }, signal)
     assert.equal(fresh.value.kind, 'windows')
     assert.equal(fresh.value.provider, 'openai-codex')
-    // A request with no provider is a pre-upgrade page: answer the legacy shape.
-    const legacy = await rpc('usage', {}, signal)
-    assert.deepEqual(legacy.value, {
-      planType: 'plus',
-      weekly: { usedPercent: 3, remainingPercent: 97, windowSeconds: WEEK, resetsAt: 1_788_134_407 },
-      fetchedAt: '2026-08-20T12:00:00.000Z',
-    })
+    // An omitted provider used to mean "a page from before the chip knew three
+    // routes", answered in the old codex-only shape. Every such page calls the
+    // channel this plugin served before 0.7.0, which is no longer registered,
+    // so nothing that can reach this Handler omits it: an omission is a
+    // malformed request now, and it must not cost an upstream read.
+    asked.length = 0
+    assert.equal((await rpc(OPENAI_CODEX_USAGE_METHOD, {}, signal)).error?.code, 'invalid-request')
+    assert.equal((await rpc(OPENAI_CODEX_USAGE_METHOD, { force: true }, signal)).error?.code, 'invalid-request')
+    assert.deepEqual(asked, [])
     assert.equal((await rpc('catalog', {}, signal)).error.code, 'method-not-found',
       'the model picker this served is gone; the endpoint must not answer it')
   })
@@ -479,8 +503,8 @@ describe('provider usage service and RPC', () => {
     const rpc = createProviderUsageRpc({
       get: async () => { throw new Error('sk_secret_MUST_NOT_LEAK') },
     })
-    const result = await rpc('usage', { provider: 'deepseek-official' }, new AbortController().signal)
-    assert.deepEqual(result, { ok: false, error: { code: 'unavailable', message: 'usage unavailable' } })
+    const result = await rpc(OPENAI_CODEX_USAGE_METHOD, { provider: 'deepseek-official' }, new AbortController().signal)
+    assert.deepEqual(result, { ok: false, error: { code: 'unavailable', message: 'usage unavailable', details: {} } })
     assert.doesNotMatch(JSON.stringify(result), /MUST_NOT_LEAK/u)
   })
 })
@@ -565,7 +589,7 @@ describe('usage cache and trusted RPC', () => {
     })
     const rpc = createOpenAICodexUsageRpc(service)
     const abort = new AbortController()
-    const pending = rpc('usage', {}, abort.signal)
+    const pending = rpc(OPENAI_CODEX_USAGE_METHOD, {}, abort.signal)
     await started
     abort.abort()
     assert.equal((await pending).error.code, 'aborted')
@@ -610,19 +634,19 @@ describe('usage cache and trusted RPC', () => {
       },
     })
     const signal = new AbortController().signal
-    assert.deepEqual(await rpc('usage', { force: true }, signal), {
+    assert.deepEqual(await rpc(OPENAI_CODEX_USAGE_METHOD, { force: true }, signal), {
       ok: true,
       value: { weekly: { usedPercent: 3, remainingPercent: 97, windowSeconds: WEEK, resetsAt: 1_788_134_407 } },
     })
     assert.deepEqual(forced, [true])
     assert.equal((await rpc('other', {}, signal)).error.code, 'method-not-found')
-    assert.equal((await rpc('usage', { force: 'yes' }, signal)).error.code, 'invalid-request')
+    assert.equal((await rpc(OPENAI_CODEX_USAGE_METHOD, { force: 'yes' }, signal)).error.code, 'invalid-request')
   })
 
   test('publishes only a stable RPC failure code', async () => {
     const rpc = createOpenAICodexUsageRpc({ get: async () => { throw new Error('access_MUST_NOT_LEAK') } })
-    const result = await rpc('usage', {}, new AbortController().signal)
-    assert.deepEqual(result, { ok: false, error: { code: 'unavailable', message: 'Codex usage unavailable' } })
+    const result = await rpc(OPENAI_CODEX_USAGE_METHOD, {}, new AbortController().signal)
+    assert.deepEqual(result, { ok: false, error: { code: 'unavailable', message: 'Codex usage unavailable', details: {} } })
     assert.doesNotMatch(JSON.stringify(result), /MUST_NOT_LEAK/u)
   })
 })

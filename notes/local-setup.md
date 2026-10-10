@@ -55,3 +55,23 @@ ls -l ~/.dsh/profiles/web/node_modules/dsh-provider-quota/src/client.js
 包名和 handoff id 的一致由 `identity` 门盯着，不靠这份测试。
 
 真实渲染这一半跑不到，只能人去看 `dsh web`——见 `AGENTS.md` 的「门盖不到的地方」。
+
+### 软链里的软链会失效
+
+`~/.dsh/profiles/node_modules/@deepseek-ai/*` 是 dsh 铺平的一层软链，每条指向 harness 检出里
+pnpm 放那个包的位置。harness 升级后 pnpm 会把包挪到别的嵌套目录，这层不跟着动，于是一批链接悬空。
+运行时不受影响（插件通过 `ctx` 拿服务，不 import 这些包），只有测试要 import 的那几个会报
+`ERR_MODULE_NOT_FOUND`——而 `host` 那份 suite 会因此整个被 skip，`npm test` 的 `suite` 门才拦住它。
+查和修：
+
+```sh
+for l in ~/.dsh/profiles/node_modules/@deepseek-ai/*; do [ -e "$l" ] || echo "$(basename $l)"; done
+ln -sfn /path/to/deepseek-harness/packages/settings/settings ~/.dsh/profiles/node_modules/@deepseek-ai/dsh-settings
+ln -sfn /path/to/deepseek-harness/packages/boot/config-editor ~/.dsh/profiles/node_modules/@deepseek-ai/dsh-config-editor
+```
+
+目标写 workspace 里的包目录（`packages/<组>/<包>`），不写 pnpm 的嵌套路径——前者不会随升级挪动。
+
+要补哪几条，以 `test/host.test.js` 和 `test/credentials.test.js` 开头那串 import 为准，这里不抄名单。
+`llm-deepseek`、`llm-pi-ai` 两个 entry 背后的适配器不用链：host 测试从 `@deepseek-ai/dsh-base`
+自己的依赖里按 id 解析它们，所以只要 `dsh-base` 这一条有效。

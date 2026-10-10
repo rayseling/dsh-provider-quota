@@ -12,12 +12,15 @@
  *
  * They need no peer dependencies, so they run in any checkout: importing
  * `../src/index.js` would pull pi-ai and the credential seam in behind it and
- * make this suite fail to load wherever those are absent.
+ * make this suite fail to load wherever those are absent. `../src/rpc-route.js`
+ * imports nothing outside this repository, which is why the route path below
+ * is read from it rather than written out again.
  */
 
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { describe, test } from 'node:test'
+import { OPENAI_CODEX_USAGE_PATH } from '../src/rpc-route.js'
 
 const source = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
 
@@ -301,16 +304,17 @@ describe('usage card state', () => {
     const state = face.hooks.quota.getSnapshot()
     assert.equal(state.routes['openai-codex'].state, 'ready')
     assert.deepEqual(state.routes['openai-codex'].usage, result.value)
-    const usageCall = calls.find(call => call.method === 'usage')
-    assert.deepEqual(usageCall, {
-      channel: '/dsh-provider-quota',
-      method: 'usage',
-      payload: { provider: 'openai-codex', force: false },
-      signal: usageCall.signal,
-    })
+    // The chip and the host each keep their own copy of the route name, in two
+    // files no import connects. Comparing each copy to a literal of its own
+    // stays green after either side moves; what has to hold is that the chip
+    // calls the path the host registers.
+    const target = call => `${call.channel}/${call.method}`
+    const usageCall = calls.find(call => target(call) === OPENAI_CODEX_USAGE_PATH)
+    assert.ok(usageCall !== undefined, `no call reached ${OPENAI_CODEX_USAGE_PATH}; the chip called ${JSON.stringify(calls.map(target))}`)
+    assert.deepEqual(usageCall.payload, { provider: 'openai-codex', force: false })
     assert.ok(usageCall.signal instanceof AbortSignal)
     await face.refreshUsage()
-    const usageCalls = calls.filter(call => call.method === 'usage')
+    const usageCalls = calls.filter(call => target(call) === OPENAI_CODEX_USAGE_PATH)
     assert.deepEqual(usageCalls[usageCalls.length - 1].payload, { provider: 'openai-codex', force: true })
   })
 

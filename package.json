@@ -1,6 +1,6 @@
 {
   "name": "dsh-provider-quota",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Account-quota surface for a DeepSeek Harness composition: one authenticated Connection RPC plus a session-header chip showing the usage of whichever route the session is on — Codex 5h/7d, OpenCode Go 5h/7d/1m, or the DeepSeek balance. Registers no model route and no settings section.",
   "type": "module",
   "main": "src/index.js",
@@ -39,9 +39,12 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-app-boot": ">=0.1.7-alpha.1",
+    "@deepseek-ai/dsh-base": "*",
+    "@deepseek-ai/dsh-client-connection": "*",
+    "@deepseek-ai/dsh-config-editor": ">=0.1.7-alpha.1",
     "@deepseek-ai/dsh-credentials-local": "*",
-    "@deepseek-ai/dsh-settings": "*",
-    "@deepseek-ai/dsh-settings-file": "*",
+    "@deepseek-ai/dsh-settings": ">=0.1.7-alpha.1",
     "@deepseek-ai/schemastery": "*"
   }
 }

@@ -41,12 +41,45 @@ export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
  */
 const OPENCODE_SESSION_ID = 'd8666b3e-6cd6-47d3-bec4-182b5c3513a5'
 
-/** DeepSeek official balance endpoint; the path is appended to the route's baseURL. */
+/**
+ * DeepSeek's API root, where its official balance endpoint lives. Not the
+ * route's default `baseURL`: the harness defaults that to the Messages mount
+ * below this root (see {@link deepseekApiRoot}).
+ */
 export const DEEPSEEK_PUBLIC_BASE_URL = 'https://api.deepseek.com'
 
-/** Harness Connection RPC channel and method consumed by the browser card. */
-export const OPENAI_CODEX_USAGE_CHANNEL = '/dsh-provider-quota'
-export const OPENAI_CODEX_USAGE_METHOD = 'usage'
+/** The Messages mount under a DeepSeek API root, with the `/v1` the harness reuses rather than doubles. */
+const DEEPSEEK_MESSAGES_MOUNT = /\/anthropic(?:\/v1)?\/*$/u
+
+/**
+ * The DeepSeek API root a route's base hangs off.
+ *
+ * Since dsh 0.1.7-alpha.1 the harness reads the DeepSeek route's `baseURL`,
+ * and `DEEPSEEK_BASE_URL`, as the root its Messages requests are built on —
+ * officially `https://api.deepseek.com/anthropic` — and the balance endpoint
+ * is not under that mount; it sits at the API root above it. So the mount
+ * comes off before {@link fetchDeepSeekBalance} appends its suffix. Any other
+ * path is a gateway whose layout this plugin cannot know, and it is used as
+ * written. The origin never changes either way, so the key still goes only
+ * where the route itself is configured to send it.
+ * @param {string} base - an absolute http(s) base without a trailing slash.
+ * @returns {string} the base the balance suffix is appended to.
+ */
+export function deepseekApiRoot(base) {
+  var url = new URL(base)
+  if (url.search !== '' || url.hash !== '' || !DEEPSEEK_MESSAGES_MOUNT.test(url.pathname)) return base
+  url.pathname = url.pathname.replace(DEEPSEEK_MESSAGES_MOUNT, '')
+  return url.href.replace(/\/+$/u, '')
+}
+
+/**
+ * Harness Connection channel and method the browser chip calls. The channel is
+ * Connection's shared `/api`, where the Host mounts the method as an exact
+ * Fetch route (see `./rpc-route.js`); the method carries the package name
+ * because `/api` is one namespace for every plugin.
+ */
+export const OPENAI_CODEX_USAGE_CHANNEL = '/api'
+export const OPENAI_CODEX_USAGE_METHOD = 'dsh-provider-quota.usage'
 const FIVE_HOUR_SECONDS = 5 * 60 * 60
 const WEEK_SECONDS = 7 * 24 * 60 * 60
 const WINDOW_TOLERANCE = 0.05
@@ -434,18 +467,18 @@ function isUsageRequest(payload) {
 export function createOpenAICodexUsageRpc(service) {
   return async (endpoint, payload, signal) => {
     if (endpoint !== OPENAI_CODEX_USAGE_METHOD) {
-      return { ok: false, error: { code: 'method-not-found', message: 'Unknown Codex usage method' } }
+      return { ok: false, error: { code: 'method-not-found', message: 'Unknown Codex usage method', details: {} } }
     }
     if (!isUsageRequest(payload)) {
-      return { ok: false, error: { code: 'invalid-request', message: 'Invalid Codex usage request' } }
+      return { ok: false, error: { code: 'invalid-request', message: 'Invalid Codex usage request', details: {} } }
     }
     if (signal.aborted) {
-      return { ok: false, error: { code: 'aborted', message: 'Codex usage request was cancelled' } }
+      return { ok: false, error: { code: 'aborted', message: 'Codex usage request was cancelled', details: {} } }
     }
     try {
       return { ok: true, value: await service.get(payload.force === true, signal) }
     } catch (error) {
-      return { ok: false, error: { code: publicFailureCode(error), message: 'Codex usage unavailable' } }
+      return { ok: false, error: { code: publicFailureCode(error), message: 'Codex usage unavailable', details: {} } }
     }
   }
 }
@@ -612,9 +645,9 @@ export async function fetchOpencodeUsage(options) {
 }
 
 /**
- * Fetch and normalize the official DeepSeek balance payload, against the
- * route's own baseURL with the fixed /user/balance suffix.
- * @param {{endpoint: string, apiKey: string, fetch?: typeof globalThis.fetch, now?: () => number, timeoutMs?: number, signal?: AbortSignal}} options
+ * Fetch and normalize the official DeepSeek balance payload: the fixed
+ * /user/balance suffix on the API root of the route's own base.
+ * @param {{endpoint: string, apiKey: string, fetch?: typeof globalThis.fetch, now?: () => number, timeoutMs?: number, signal?: AbortSignal}} options - `endpoint` is the route's base, Messages mount and all.
  */
 export async function fetchDeepSeekBalance(options) {
   throwIfUsageAborted(options.signal)
@@ -627,7 +660,7 @@ export async function fetchDeepSeekBalance(options) {
   try {
     var timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
     var signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
-    response = await fetchImpl(options.endpoint + '/user/balance', {
+    response = await fetchImpl(deepseekApiRoot(options.endpoint) + '/user/balance', {
       method: 'GET',
       headers: { Accept: 'application/json', Authorization: 'Bearer ' + options.apiKey },
       redirect: REDIRECT_POLICY,
@@ -800,37 +833,21 @@ export function createProviderUsageService(options) {
 }
 
 /**
- * The strict usage request payload: an optional provider and an optional force
+ * The strict usage request payload: the route to read and an optional force
  * flag, and nothing else.
  *
- * An absent `provider` is not a default so much as a version marker — it is
- * what a page loaded before this plugin learned about the other two routes
- * sends, and {@link createProviderUsageRpc} answers those in the codex-only
- * shape that client knows how to read, so a stale tab keeps working until it
- * reloads.
+ * The provider is required. Omitting it once meant "a page loaded before the
+ * chip knew three routes", answered in the codex-only shape that page read.
+ * Every such page calls the channel served before 0.7.0, which is no longer
+ * registered, so nothing that reaches this Handler can mean that any more.
  * @param {unknown} payload - decoded RPC payload.
- * @returns {payload is {provider?: string, force?: boolean}} whether it is answerable.
+ * @returns {payload is {provider: string, force?: boolean}} whether it is answerable.
  */
 function isProviderUsageRequest(payload) {
   if (!isRecord(payload) || Object.keys(payload).some(function (key) { return key !== 'provider' && key !== 'force' })) return false
-  if (payload.provider !== undefined) {
-    if (typeof payload.provider !== 'string' || payload.provider.length === 0 || payload.provider.length > 64
-      || !/^[a-z0-9.-]+$/u.test(payload.provider)) return false
-  }
+  if (typeof payload.provider !== 'string' || payload.provider.length === 0 || payload.provider.length > 64
+    || !/^[a-z0-9.-]+$/u.test(payload.provider)) return false
   return payload.force === undefined || typeof payload.force === 'boolean'
-}
-
-/** @param {object} value @returns {object} the legacy codex-only shape older clients read. */
-function legacyCodexValue(value) {
-  var weekly = value.kind === 'windows' ? value.windows.find(function (w) { return w.id === '7d' }) : undefined
-  var legacyWeekly = weekly === undefined
-    ? null
-    : { usedPercent: weekly.usedPercent, remainingPercent: weekly.remainingPercent, windowSeconds: 604800, ...(weekly.resetsAt === undefined ? {} : { resetsAt: weekly.resetsAt }) }
-  return {
-    ...(value.planType === undefined ? {} : { planType: value.planType }),
-    weekly: legacyWeekly,
-    fetchedAt: value.fetchedAt,
-  }
 }
 
 /**
@@ -842,25 +859,18 @@ function legacyCodexValue(value) {
 export function createProviderUsageRpc(service) {
   return async (endpoint, payload, signal) => {
     if (endpoint !== OPENAI_CODEX_USAGE_METHOD) {
-      return { ok: false, error: { code: 'method-not-found', message: 'Unknown usage method' } }
+      return { ok: false, error: { code: 'method-not-found', message: 'Unknown usage method', details: {} } }
     }
     if (!isProviderUsageRequest(payload)) {
-      return { ok: false, error: { code: 'invalid-request', message: 'Invalid usage request' } }
+      return { ok: false, error: { code: 'invalid-request', message: 'Invalid usage request', details: {} } }
     }
     if (signal.aborted) {
-      return { ok: false, error: { code: 'aborted', message: 'usage request was cancelled' } }
+      return { ok: false, error: { code: 'aborted', message: 'usage request was cancelled', details: {} } }
     }
     try {
-      var value = await service.get(payload.provider === undefined ? 'openai-codex' : payload.provider, payload.force === true, signal)
-      // A request without a provider predates this version: answer in the shape
-      // that client knew, so a stale tab survives the upgrade until it reloads.
-      if (payload.provider === undefined) {
-        if (value.kind === 'windows' && value.provider === 'openai-codex') value = legacyCodexValue(value)
-        else if (value.kind === 'none') value = { weekly: null, fetchedAt: value.fetchedAt }
-      }
-      return { ok: true, value }
+      return { ok: true, value: await service.get(payload.provider, payload.force === true, signal) }
     } catch (error) {
-      return { ok: false, error: { code: publicFailureCode(error), message: 'usage unavailable' } }
+      return { ok: false, error: { code: publicFailureCode(error), message: 'usage unavailable', details: {} } }
     }
   }
 }

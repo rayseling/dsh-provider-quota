@@ -31,9 +31,13 @@
    */
   function factory(require) {
     var React = require('react')
-    /** Trusted Harness Connection RPC carrying secret-free usage data. */
-    var CODEX_USAGE_CHANNEL = '/dsh-provider-quota'
-    var CODEX_USAGE_METHOD = 'usage'
+    /**
+     * Trusted Harness Connection RPC carrying secret-free usage data: an exact
+     * route on the shared `/api` channel, so the method name carries the
+     * package name. Must match `OPENAI_CODEX_USAGE_*` in `usage.js`.
+     */
+    var CODEX_USAGE_CHANNEL = '/api'
+    var CODEX_USAGE_METHOD = 'dsh-provider-quota.usage'
     // Host worst case is 20s credential resolution plus a 15s usage fetch.
     var CODEX_USAGE_TIMEOUT_MS = 40_000
     // Match the Host cache TTL. Scheduling from the previous completion keeps

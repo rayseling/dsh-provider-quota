@@ -4,7 +4,7 @@
 **症状**：`AGENTS.md` 第 1 条坑里写着「`validate` 钩子被 `SettingsRuntime.register`
 在解析这份设置时就调用了」。**harness 里没有 SettingsRuntime 这个类。**
 `grep -rn --include="*.ts" SettingsRuntime packages/ vendor/` 命中 0 次。
-真名是 `SettingsProvider`（`packages/settings/settings/src/index.ts`）。
+当时的真名是 SettingsProvider（`packages/settings/settings/src/index.ts`；0.1.7-alpha.1 起同一文件里的类叫 `SettingsForms`）。
 
 机制描述完全正确——`register()` 确实在解析时调用 `validate`，
 被逐字引用的那行 `resolved: deepFreeze(this.resolve(..., validate))` 也确实在那个文件里。

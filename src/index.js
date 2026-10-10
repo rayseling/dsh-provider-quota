@@ -9,10 +9,11 @@
  * request trust and browser-session authentication first, and every credential
  * stays host-side.
  *
- * It configures nothing, so it registers no settings section. It does READ two
- * sections other plugins own — `llm-pi-ai` and `llm-deepseek` — because the
- * endpoint and credential reference of an API-key quota route are the ones
- * that route is already configured with.
+ * It configures nothing, so it has no settings form of its own. It does READ
+ * the live configuration of two profile entries other plugins own —
+ * `llm-pi-ai` and `llm-deepseek` — because the endpoint and credential
+ * reference of an API-key quota route are the ones that route is already
+ * configured with.
  *
  * It registers no model route. The `openai-codex` route is the harness's own
  * `llm-pi-ai` plugin's to serve: that package reached pi-ai's OAuth catalog
@@ -35,9 +36,9 @@ import {
   createProviderUsageRpc,
   createProviderUsageService,
   DEEPSEEK_PUBLIC_BASE_URL,
-  OPENAI_CODEX_USAGE_CHANNEL,
   OPENCODE_GO_BASE_URL,
 } from './usage.js'
+import { createUsageFetchRoute } from './rpc-route.js'
 import { credentialKey, credentialRef, isCredentialKeySegment } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { homedir } from 'node:os'
@@ -46,6 +47,7 @@ import { readFile } from 'node:fs/promises'
 
 export { createCodexCredentialStore, readCodexCredential, OPENAI_CODEX_PROVIDER } from './credentials.js'
 export { createOpenAICodexAccessResolver } from './token.js'
+export { createUsageFetchRoute, OPENAI_CODEX_USAGE_PATH } from './rpc-route.js'
 export {
   createOpenAICodexUsageRpc,
   createOpenAICodexUsageService,
@@ -79,28 +81,39 @@ export const name = 'provider-quota'
 export const inject = []
 
 /**
- * Read one settings section defensively: an absent service, an unmounted
- * namespace, or a reader that throws all answer "nothing", never a throw that
- * could take the quota read down with it.
+ * Read the live configuration of one profile entry through the settings
+ * seam's `describe()` projection — the same view the harness's own Models
+ * page reads a route's profile through.
+ *
+ * Three outcomes, kept apart on purpose:
+ *  - no settings service at all (a headless composition mounting none), or no
+ *    entry under that id (the adapter that owns it is not mounted): "nothing
+ *    configured", and the route falls back to its defaults;
+ *  - a settings service this plugin cannot read: a THROW, which fails the
+ *    quota read. Not a default. The 0.1.7-alpha.1 settings rewrite removed
+ *    `get(ns)`, which this read used to call; `describe()`, which every
+ *    release before it offered as well, is what both sides of that rewrite
+ *    share. The old call kept failing as a TypeError inside a catch-all here,
+ *    and every API-key route read its endpoint and credential reference from
+ *    the defaults for two releases with nothing red anywhere. A wrong seam
+ *    and an absent seam are two different states.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
- * @param {string} ns - the settings namespace.
- * @returns {unknown} the live section, when one is attached.
+ * @param {string} ns - the profile entry id.
+ * @returns {unknown} the entry's live volatile configuration, when one is mounted.
  */
 function readSection(ctx, ns) {
-  try {
-    // `ctx.get(name)` and not `ctx.settings`: this plugin declares no
-    // injection, and the property accessor refuses a service the fiber never
-    // declared — it throws `cannot get property "settings" without inject`
-    // before the fallback beside it can run. The catch below then turns that
-    // into "nothing configured" for every route, silently, so every API-key
-    // route would read its endpoint and credential reference from the defaults
-    // instead of from the section the operator actually wrote.
-    var settings = ctx.get('settings')
-    if (settings === undefined || settings === null) return undefined
-    return settings.get(ns)
-  } catch (_sectionUnavailable) {
-    return undefined
+  // `ctx.get(name)` and not `ctx.settings`: this plugin declares no
+  // injection, and the property accessor refuses a service the fiber never
+  // declared — it throws `cannot get property "settings" without inject`
+  // before any fallback beside it could run.
+  var settings = ctx.get('settings')
+  if (settings === undefined || settings === null) return undefined
+  if (typeof settings.describe !== 'function') {
+    throw new CodexUsageError('unavailable',
+      'settings service has no describe(), so the route\'s own configuration cannot be read')
   }
+  var descriptor = settings.describe().find(row => row.ns === ns)
+  return descriptor === undefined ? undefined : descriptor.value
 }
 
 /**
@@ -256,7 +269,9 @@ export function apply(ctx) {
     resolveRoute,
     codex: { resolveAccessToken, readCredential: () => readCodexCredential(ctx) },
   })
+  // An exact Fetch route on Connection's own `/api`, not `rpc.handle`: the
+  // latter has needed a harness patch since dsh 0.1.5-alpha.1 (`./rpc-route.js`).
   ctx.inject(['connection'], (connectionCtx) => {
-    connectionCtx.connection.rpc.handle(OPENAI_CODEX_USAGE_CHANNEL, createProviderUsageRpc(usage))
+    connectionCtx.connection.fetch.register(createUsageFetchRoute(createProviderUsageRpc(usage)))
   })
 }

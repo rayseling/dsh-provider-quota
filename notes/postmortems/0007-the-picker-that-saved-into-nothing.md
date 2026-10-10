@@ -19,7 +19,7 @@
   **完全无感**——卡片那半边的测试测的是卡片，host 那半边的测试还不存在。
 - **类型**：JS 没有类型；就算有也拦不住——写的一方和读的一方之间没有任何静态联系，
   它们只是碰巧同意一个字符串 key。
-- **settings seam**：用真 `FileSettingsProvider` + `ctx.settings.mutate(ns, ops)` 写进去，
+- **settings seam**：用当时的真 seam（FileSettingsProvider，0.1.7-alpha.1 起已被 `SettingsForms` 取代）+ `ctx.settings.mutate(ns, ops)` 写进去，
   **没有被拒绝**。yaml 落盘：
 
   ```yaml

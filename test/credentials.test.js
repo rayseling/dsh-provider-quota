@@ -256,7 +256,7 @@ describe('token resolution over the record', { skip }, () => {
       },
     })
     const rpc = usageModule.createProviderUsageRpc(service)
-    const answer = await rpc('usage', { provider: 'openai-codex' }, new AbortController().signal)
+    const answer = await rpc(usageModule.OPENAI_CODEX_USAGE_METHOD, { provider: 'openai-codex' }, new AbortController().signal)
     assert.equal(answer.ok, false)
     assert.equal(answer.error.code, 'signed-out')
   })
