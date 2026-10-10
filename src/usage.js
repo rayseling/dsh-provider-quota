@@ -209,7 +209,18 @@ export function normalizeOpenAICodexUsage(payload, nowMs = Date.now()) {
   }
 }
 
-/** @param {unknown} error @returns {CodexUsageError} */
+/**
+ * Translate a credential-resolution failure into the public vocabulary,
+ * keeping the resolver's own classification. `./token.js` already decides
+ * which refresh failures are the grant's fault (AUTH) and which are the
+ * moment's — a dropped link, the endpoint's 5xx, its 429 — and only the first
+ * may reach the chip as a sign-in problem; telling the operator to sign in
+ * again over a dropped packet is advice re-authenticating cannot act on.
+ * `credential` is left for a failure nothing classified, such as an
+ * unreadable credential record.
+ * @param {unknown} error - thrown value.
+ * @returns {CodexUsageError} the public failure.
+ */
 function credentialError(error) {
   if (error instanceof CodexUsageError) return error
   const code = isRecord(error) && typeof error.code === 'string' ? error.code : undefined
@@ -221,6 +232,15 @@ function credentialError(error) {
   }
   if (code === 'TIMEOUT') {
     return new CodexUsageError('timeout', 'OpenAI Codex credential resolution timed out', 504)
+  }
+  if (code === 'TRANSPORT') {
+    return new CodexUsageError('network', 'OpenAI Codex token refresh did not reach the endpoint', 502)
+  }
+  if (code === 'SERVER') {
+    return new CodexUsageError('upstream', 'OpenAI Codex token endpoint failed', 502)
+  }
+  if (code === 'RATE_LIMIT') {
+    return new CodexUsageError('rate-limited', 'OpenAI Codex token endpoint is rate limited', 429)
   }
   return new CodexUsageError('credential', 'OpenAI Codex credential resolution failed', 502)
 }
@@ -248,15 +268,33 @@ function throwIfUsageAborted(signal) {
  * }} options - injected credential/network dependencies.
  */
 export async function fetchOpenAICodexUsage(options) {
+  return (await readOpenAICodexUsage(options)).value
+}
+
+/**
+ * {@link fetchOpenAICodexUsage}, plus the cache identity of the credential the
+ * request actually carried — which is what a cache must file the answer
+ * under, not the identity read before the token was resolved.
+ * @param {Parameters<typeof fetchOpenAICodexUsage>[0]} options - as for {@link fetchOpenAICodexUsage}.
+ * @returns {Promise<{value: Awaited<ReturnType<typeof normalizeOpenAICodexUsage>>, identity: string}>}
+ */
+async function readOpenAICodexUsage(options) {
   const now = options.now ?? Date.now
   throwIfUsageAborted(options.signal)
   let accessToken
-  let credential
+  let accountId
   try {
     accessToken = await options.resolveAccessToken()
     throwIfUsageAborted(options.signal)
-    credential = await options.readCredential()
-    throwIfUsageAborted(options.signal)
+    // The account id the token itself carries, the way pi-ai reads it for
+    // its own requests: one value, so token and account cannot come from two
+    // different reads of a store a sign-in may rewrite in between. Only a
+    // token without the claim falls back to the stored record.
+    accountId = typeof accessToken === 'string' ? codexTokenAccountId(accessToken) : undefined
+    if (accountId === undefined) {
+      accountId = recordAccountId(await options.readCredential())
+      throwIfUsageAborted(options.signal)
+    }
   } catch (error) {
     if (error instanceof CodexUsageError) throw error
     throw credentialError(error)
@@ -264,13 +302,6 @@ export async function fetchOpenAICodexUsage(options) {
   if (typeof accessToken !== 'string' || accessToken.length === 0) {
     throw new CodexUsageError('signed-out', 'OpenAI Codex is not signed in', 401)
   }
-  const accountId = isRecord(credential)
-    ? typeof credential.accountId === 'string' && credential.accountId.length > 0
-      ? credential.accountId
-      : typeof credential.account_id === 'string' && credential.account_id.length > 0
-        ? credential.account_id
-        : undefined
-    : undefined
   const fetchImpl = options.fetch ?? globalThis.fetch
   if (typeof fetchImpl !== 'function') {
     throw new CodexUsageError('unavailable', 'This host has no fetch implementation')
@@ -282,8 +313,10 @@ export async function fetchOpenAICodexUsage(options) {
     ...(accountId === undefined ? {} : { 'ChatGPT-Account-Id': accountId }),
   }
   let response
+  // Outside the try: the deadline governs the body read below as well, and
+  // that catch has to be able to tell it apart from a malformed body.
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   try {
-    const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
     const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
     response = await fetchImpl(options.endpoint ?? OPENAI_CODEX_USAGE_URL, {
       method: 'GET',
@@ -314,24 +347,52 @@ export async function fetchOpenAICodexUsage(options) {
     payload = await response.json()
   } catch {
     if (options.signal?.aborted) throw usageAborted()
+    if (timeout.aborted) throw new CodexUsageError('timeout', 'OpenAI Codex usage response timed out', 504)
     throw new CodexUsageError('invalid-response', 'OpenAI Codex usage endpoint did not return JSON')
   }
   throwIfUsageAborted(options.signal)
-  return normalizeOpenAICodexUsage(payload, now())
+  return { value: normalizeOpenAICodexUsage(payload, now()), identity: codexIdentity(accountId, accessToken) }
 }
 
-/** @param {unknown} credential @returns {string} process-local cache identity, never published or logged. */
+/**
+ * @param {string} token - a Codex access token.
+ * @returns {string|undefined} the ChatGPT account id in its auth claim, when it carries one.
+ */
+function codexTokenAccountId(token) {
+  const claims = token.split('.')[1]
+  if (claims === undefined) return undefined
+  try {
+    const auth = JSON.parse(Buffer.from(claims, 'base64url').toString('utf8'))?.['https://api.openai.com/auth']
+    const id = isRecord(auth) ? auth.chatgpt_account_id : undefined
+    return typeof id === 'string' && id.length > 0 ? id : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** @param {unknown} credential @returns {string|undefined} the account id a stored credential records. */
+function recordAccountId(credential) {
+  if (!isRecord(credential)) return undefined
+  if (typeof credential.accountId === 'string' && credential.accountId.length > 0) return credential.accountId
+  if (typeof credential.account_id === 'string' && credential.account_id.length > 0) return credential.account_id
+  return undefined
+}
+
+/**
+ * @param {string|undefined} accountId - the account a credential belongs to, when known.
+ * @param {unknown} access - its access token.
+ * @returns {string} process-local cache identity, never published or logged.
+ */
+function codexIdentity(accountId, access) {
+  if (accountId !== undefined) return `account:${accountId}`
+  return typeof access === 'string' && access.length > 0 ? `access:${access}` : 'signed-out'
+}
+
+/** @param {unknown} credential @returns {string} the cache identity of a stored credential, read the same way as a used one. */
 function credentialCacheIdentity(credential) {
   if (!isRecord(credential)) return 'signed-out'
-  const accountId = typeof credential.accountId === 'string' && credential.accountId.length > 0
-    ? credential.accountId
-    : typeof credential.account_id === 'string' && credential.account_id.length > 0
-      ? credential.account_id
-      : undefined
-  if (accountId !== undefined) return `account:${accountId}`
-  return typeof credential.access === 'string' && credential.access.length > 0
-    ? `access:${credential.access}`
-    : 'signed-out'
+  const access = credential.access
+  return codexIdentity(recordAccountId(credential) ?? (typeof access === 'string' ? codexTokenAccountId(access) : undefined), access)
 }
 
 /**
@@ -426,8 +487,11 @@ export function createOpenAICodexUsageService(options) {
         settled: false,
         promise: undefined,
       }
-      entry.promise = fetchOpenAICodexUsage({ ...options, signal: entry.controller.signal }).then((value) => {
-        if (generation === startedGeneration && activeIdentity === identity) {
+      entry.promise = readOpenAICodexUsage({ ...options, signal: entry.controller.signal }).then(({ value, identity: used }) => {
+        // Filed under the credential the request carried, never under the one
+        // read before it: a sign-in between the two would otherwise store one
+        // account's quota as the other's, served from cache on the way back.
+        if (generation === startedGeneration && activeIdentity === identity && used === identity) {
           cached = value
           cachedAt = now()
         }
@@ -638,6 +702,8 @@ export async function fetchOpencodeUsage(options) {
     payload = await response.json()
   } catch {
     if (options.signal?.aborted) throw usageAborted()
+    // `timeout` is a `var` of the request block above; the body read is under the same deadline.
+    if (timeout.aborted) throw new CodexUsageError('timeout', 'OpenCode Go usage response timed out', 504)
     throw new CodexUsageError('invalid-response', 'OpenCode Go usage endpoint did not return JSON')
   }
   throwIfUsageAborted(options.signal)
@@ -683,6 +749,8 @@ export async function fetchDeepSeekBalance(options) {
     payload = await response.json()
   } catch {
     if (options.signal?.aborted) throw usageAborted()
+    // `timeout` is a `var` of the request block above; the body read is under the same deadline.
+    if (timeout.aborted) throw new CodexUsageError('timeout', 'DeepSeek balance response timed out', 504)
     throw new CodexUsageError('invalid-response', 'DeepSeek balance endpoint did not return JSON')
   }
   throwIfUsageAborted(options.signal)

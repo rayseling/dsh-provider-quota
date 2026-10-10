@@ -80,3 +80,22 @@ key 去了哪里是发现本身，失败码只是用户怎么知道。
 **它证明不了**：只覆盖「漏 scheme」这一种写错法。一个 `https://` 开头、
 主机名却打错的地址仍然是合法配置，key 照发不误——那是操作者自己的 origin，
 插件无从判断，也不该判断。
+
+## 复发：指名的凭据引用解析不到（2026-10-10）
+
+同一个错误，换到了 key 上。profile 写了 `apiKeyEnv`，就是操作者在说「这条路由用这把 key」。
+它解析不到时，插件曾依次去读 `llm-pi-ai` 为路由存的记录、启动环境、OpenCode CLI 的 `auth.json`，
+找到哪把用哪把，发往这条路由配置的端点。宿主自己的模型路由此时直接报 MISSING_CREDENTIAL。
+一次外部审计照这个顺序复现：账户 A 的 key 被发往租户 B 的网关。
+
+**为什么没拦住**：host 测试分别覆盖了「指名的引用解析得到」和「什么都没配时读 CLI 的 key」，
+没有一条把「指名但缺失」和「旁边另有一把 key」放在一起。两条各自是对的，合起来的那个状态没人测。
+
+**边界**：指名的引用只走 credentials seam，没有这个 seam 时只走启动环境，缺了就失败。
+记录和 CLI 的 key 只给没指名引用的路由用，CLI 的 key 只发往默认的 opencode.ai 端点。
+守它的是 `test/host.test.js` 的
+`a credential reference the route names, resolving to nothing, fails the read instead of borrowing a key`
+和 `the OpenCode CLI key only ever goes to OpenCode's own endpoint`，修之前都红在
+`upstream.calls` 不为空，里面是那把被借走的 key。另有一条反向的
+`a route that names no reference reads the key its adapter stored for that route`，
+防止这条规则被「修」成什么都拒绝。

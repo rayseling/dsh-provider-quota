@@ -90,3 +90,18 @@ if (joined !== undefined && …) return observeUsageRequest(joined, signal)
 **它们证明不了**：`src/client.js` 里真实渲染的那一半仍然只有人能看
 （见 AGENTS.md「门盖不到的地方」）。effect 现在会跑了，但跑它的是假 React，
 不是浏览器——真实的重渲染时机、依赖数组的行为，还是只有 `dsh web` 能验。
+
+## 复发：Codex 那一半（2026-10-10）
+
+上面修的是 API-key 路由。Codex 的读取走另一段代码，同一个错误换了个形状：
+缓存身份在请求**之前**读一次凭据得出，请求用的 token 在**之后**才解析，账户 id 又来自第三次读取。
+读取途中切换账户，B 的额度就记在 A 名下；切回 A 时从缓存拿到 B 的 77%，一次上游请求都不发。
+外部审计复现的就是这个数字。
+
+**边界**：一份状态的身份，取自**真正被使用**的那份凭据，而不是使用前读到的那份。
+账户 id 现在取自请求携带的 token 本身，pi-ai 自己发请求也是这么读的；
+缓存只在「请求所用的身份」等于「开始时的身份」时才写入。
+守它的是 `test/usage.test.js` 的
+`a read that finished on another account is never cached under the one it started on`，
+修之前红在 `actual: 77`；以及
+`the account header names the account of the token the request carries`，修之前红在 `actual: 'acc_a'`。

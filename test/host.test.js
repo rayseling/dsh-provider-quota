@@ -481,6 +481,100 @@ describe('the profile entries the API-key routes are configured in', { skip }, (
     }
   })
 
+  test('a credential reference the route names, resolving to nothing, fails the read instead of borrowing a key', async () => {
+    // The configured reference is the operator saying which key belongs to
+    // this route. When it misses, the model route itself stops with
+    // MISSING_CREDENTIAL; a stored record or the OpenCode CLI's key found
+    // nearby may belong to another account entirely, and the endpoint it
+    // would travel to is this route's — another tenant's gateway, here.
+    const home = await freshHome()
+    const cliHome = await freshHome()
+    await mkdir(join(cliHome, '.local', 'share', 'opencode'), { recursive: true })
+    await writeFile(join(cliHome, '.local', 'share', 'opencode', 'auth.json'),
+      JSON.stringify({ opencode: { type: 'api', key: 'sk-account-a-cli' } }))
+    const rpc = captureRpc()
+    await bootSeam(home, {
+      connection: rpc.connection,
+      credentials: {
+        resolve: async () => undefined,
+        readRecord: async () => ({ kind: 'api-key', key: 'sk-account-a-record' }),
+      },
+      routes: { 'llm-pi-ai': { providers: { 'opencode-go': { apiKeyEnv: 'TENANT_B_OPENCODE_KEY', baseURL: 'https://tenant-b.example/zen/go/v1' } } } },
+    })
+    const upstream = stubUpstream(() => json({ usage: { rolling: { percent: 1 } } }))
+    const realHome = process.env.HOME
+    process.env.HOME = cliHome
+    try {
+      const answer = await rpc.call({ provider: 'opencode-go' })
+      assert.deepEqual(upstream.calls, [], 'no key may travel when the one the route names is missing')
+      assert.equal(answer.ok, false, `a missing named key answered ${JSON.stringify(answer)}`)
+      assert.equal(answer.error.code, 'no-credential')
+    } finally {
+      upstream.restore()
+      if (realHome === undefined) delete process.env.HOME
+      else process.env.HOME = realHome
+    }
+  })
+
+  test('a route that names no reference reads the key its adapter stored for that route', async () => {
+    // The other side of the rule above, so it cannot be "fixed" into refusing
+    // everything: with no reference named, the model route authenticates
+    // from what its adapter stored for it, and so does this read — that
+    // record and no other.
+    const home = await freshHome()
+    const asked = []
+    const rpc = captureRpc()
+    await bootSeam(home, {
+      connection: rpc.connection,
+      credentials: {
+        resolve: async () => undefined,
+        readRecord: async (key) => {
+          asked.push(String(key))
+          return String(key) === 'llm-pi-ai/opencode-go' ? { kind: 'api-key', key: 'sk-stored-for-this-route' } : undefined
+        },
+      },
+    })
+    const upstream = stubUpstream(() => json({ usage: { rolling: { percent: 3 } } }))
+    try {
+      const answer = await rpc.call({ provider: 'opencode-go' })
+      assert.equal(answer.ok, true, `expected a quota window, got ${JSON.stringify(answer)}`)
+      assert.deepEqual(asked, ['llm-pi-ai/opencode-go'])
+      assert.deepEqual(upstream.calls, [{ url: 'https://opencode.ai/zen/go/v1/usage', auth: 'Bearer sk-stored-for-this-route' }])
+    } finally {
+      upstream.restore()
+    }
+  })
+
+  test('the OpenCode CLI key only ever goes to OpenCode\'s own endpoint', async () => {
+    // The CLI signs into opencode.ai, so its key is an opencode.ai key. A
+    // route repointed at another gateway that names no key of its own must
+    // not be handed that one.
+    const home = await freshHome()
+    const cliHome = await freshHome()
+    await mkdir(join(cliHome, '.local', 'share', 'opencode'), { recursive: true })
+    await writeFile(join(cliHome, '.local', 'share', 'opencode', 'auth.json'),
+      JSON.stringify({ opencode: { type: 'api', key: 'sk-opencode-ai-cli' } }))
+    const rpc = captureRpc()
+    await bootSeam(home, {
+      connection: rpc.connection,
+      credentials: { resolve: async () => undefined, readRecord: async () => undefined },
+      routes: { 'llm-pi-ai': { providers: { 'opencode-go': { baseURL: 'https://gateway.elsewhere.example/zen/go/v1' } } } },
+    })
+    const upstream = stubUpstream(() => json({ usage: { rolling: { percent: 1 } } }))
+    const realHome = process.env.HOME
+    process.env.HOME = cliHome
+    try {
+      const answer = await rpc.call({ provider: 'opencode-go' })
+      assert.deepEqual(upstream.calls, [], 'the CLI key must not reach a gateway it was not issued for')
+      assert.equal(answer.ok, false)
+      assert.equal(answer.error.code, 'no-credential')
+    } finally {
+      upstream.restore()
+      if (realHome === undefined) delete process.env.HOME
+      else process.env.HOME = realHome
+    }
+  })
+
   test('a settings service this plugin cannot read fails the read instead of reading the defaults', async () => {
     // The seam before 0.1.7-alpha.1 answered `get(ns)`; the plugin called it
     // inside a catch-all, so when the method went away the TypeError became

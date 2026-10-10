@@ -91,8 +91,8 @@ records:
 | provider | 数据来源 | 凭据 |
 | --- | --- | --- |
 | `openai-codex` | `GET https://chatgpt.com/backend-api/wham/usage`（私有契约） | `llm-pi-ai/openai-codex` 这条 grant 记录，账户 id 同源 |
-| `opencode-go` | `GET {该路由实际 baseURL}/usage`（未公开接口，cc-switch#6433 发现） | `llm-pi-ai.providers.opencode-go` 配的 `apiKeyEnv`（默认 `OPENCODE_GO_API_KEY`），回退 `llm-pi-ai` 存储的 API key 记录，再回退 OpenCode CLI 的 `auth.json`（一个账户一条记录）；同时携带 Bearer 与 `x-api-key` |
-| `deepseek-official` | `GET {API 根}/user/balance`（官方接口）。宿主把这条路由的 `baseURL` 当 Messages 根（默认 `https://api.deepseek.com/anthropic`），API 根是去掉末尾 `/anthropic` 的那一级；别的路径原样使用 | `llm-deepseek` 这条 entry 的配置（扁平，`settingsPath: []`）里的 `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`），经 credentials seam 解析 |
+| `opencode-go` | `GET {该路由实际 baseURL}/usage`（未公开接口，cc-switch#6433 发现） | `llm-pi-ai.providers.opencode-go` 配了 `apiKeyEnv` 就只用它，解析不到直接报缺 key，不借别处的 key（模型路由此时同样失败）。没配时依次用 `OPENCODE_GO_API_KEY`、`llm-pi-ai` 为这条路由存的 API key 记录，最后是 OpenCode CLI 的 `auth.json`，后者只发往默认的 opencode.ai 端点；同时携带 Bearer 与 `x-api-key` |
+| `deepseek-official` | `GET {API 根}/user/balance`（官方接口）。宿主把这条路由的 `baseURL` 当 Messages 根（默认 `https://api.deepseek.com/anthropic`），API 根是去掉末尾 `/anthropic` 的那一级；别的路径原样使用 | `llm-deepseek` 这条 entry 的配置（扁平，`settingsPath: []`）里的 `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`），经 credentials seam 解析，解析不到直接报缺 key |
 
 两个百分比上游给的都是「已用」，原样显示，旁边的剩余是 100 减出来的；DeepSeek 金额保持 API 返回的十进制字符串，不做浮点换算。
 

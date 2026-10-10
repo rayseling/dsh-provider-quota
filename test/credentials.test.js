@@ -352,4 +352,36 @@ describe('credential failures over the record', { skip }, () => {
     const error = await resolveOnce(resolverOver(ctx))
     assert.equal(error?.code, 'RATE_LIMIT')
   })
+
+  test('the chip hears each refresh failure as what it was, and only a rejected grant as a sign-in problem', async () => {
+    // The tests above stop at the resolver, which classifies correctly. The
+    // usage layer in front of it used to know three of those codes and file
+    // the rest under `credential`, which the chip reads as "the sign-in has
+    // expired" — sending the operator to re-authenticate over a dropped
+    // packet. So this follows each failure all the way to the public code.
+    const cases = [
+      { upstream: async () => { throw new TypeError('fetch failed') }, code: 'network' },
+      { upstream: async () => new Response('upstream unavailable', { status: 503 }), code: 'upstream' },
+      { upstream: async () => new Response('slow down', { status: 429 }), code: 'rate-limited' },
+      { upstream: async () => new Response('request timeout', { status: 408 }), code: 'timeout' },
+      { upstream: async () => new Response('{"error":"invalid_grant"}', { status: 400 }), code: 'auth' },
+    ]
+    for (const { upstream, code } of cases) {
+      const ctx = await bootCredentials()
+      await storeGrant(ctx)
+      globalThis.fetch = upstream
+      const store = credentialsModule.createCodexCredentialStore(ctx)
+      const service = usageModule.createProviderUsageService({
+        resolveRoute: async () => ({ kind: 'codex' }),
+        codex: {
+          resolveAccessToken: tokenModule.createOpenAICodexAccessResolver(store),
+          readCredential: () => credentialsModule.readCodexCredential(ctx),
+        },
+      })
+      const rpc = usageModule.createProviderUsageRpc(service)
+      const answer = await rpc(usageModule.OPENAI_CODEX_USAGE_METHOD, { provider: 'openai-codex' }, new AbortController().signal)
+      assert.equal(answer.ok, false, code)
+      assert.equal(answer.error.code, code)
+    }
+  })
 })

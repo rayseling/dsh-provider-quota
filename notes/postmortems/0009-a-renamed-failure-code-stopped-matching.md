@@ -61,3 +61,17 @@
 
 **它证明不了**的，头注释里写了：码存在不等于这个 endpoint 会发它；
 `var c = error.code; c === '…'` 这种写法照样绕得过去。
+
+## 复发：解析器的分类到了额度层就丢了（2026-10-10）
+
+这回不是改名，是从来没接上。`src/token.js` 把刷新失败分成 AUTH、TIMEOUT、TRANSPORT、SERVER、
+RATE_LIMIT 几类，再加上没有记录时的 MISSING_CREDENTIAL。额度层的翻译只认 MISSING_CREDENTIAL、AUTH 和
+TIMEOUT，其余全部落进旁边的兜底 `credential`，而客户端把 `credential` 和 `auth` 读成同一句
+「Codex 登录已失效」。断网、503、429，都在叫用户重新登录。
+
+**为什么没拦住**：`test/credentials.test.js` 用真解析器把每一类都测对了，但只测到解析器为止；
+额度层的测试只喂它认识的那几个码。两半各自正确，中间那一层翻译没人从头走到尾。
+
+守它的是同文件的
+`the chip hears each refresh failure as what it was, and only a rejected grant as a sign-in problem`：
+真记录、真解析器、真 RPC，断言浏览器拿到的码。修之前红在 `actual: 'credential'`。

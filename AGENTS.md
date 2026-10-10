@@ -17,7 +17,7 @@
 | [8](notes/postmortems/0008-a-docstring-ate-the-export.md) | 漏一个 `*/`，注释会吞到**下一个** `*/`，中间的 `export` 被吃掉而语法合法 | `scanProblems` |
 | [9](notes/postmortems/0009-a-renamed-failure-code-stopped-matching.md) | 失败码改名后不抛错，只是不再匹配，落到旁边的兜底。宿主的归 `<域>/<码>` 管，**插件自己的额度码同理** | `remote-codes` 门（两半都查） |
 | [10](notes/postmortems/0010-a-base-url-that-was-wrong-read-as-absent.md) | 「**没配**」和「**配错**」不能落到同一个 `undefined`：一个用默认值，一个必须失败 | `test/host.test.js` |
-| [11](notes/postmortems/0011-one-slot-served-two-accounts.md) | 状态槽按**身份**建不按长相；换身份要清 `cached` **和** `inflight`。替身把 `useEffect` 桩成空函数 = 把被测的判断删掉再断言它没错 | 三条测试 |
+| [11](notes/postmortems/0011-one-slot-served-two-accounts.md) | 状态槽按**身份**建不按长相；换身份要清 `cached` **和** `inflight`。替身把 `useEffect` 桩成空函数 = 把被测的判断删掉再断言它没错 | 测试见复盘 |
 | [12](notes/postmortems/0012-a-deadline-that-only-stopped-waiting.md) | `race` 加超时只停**等待**不停**工作**；包装回调时少接一个 `signal` 参数是静默的 | `test/credentials.test.js` |
 | [13](notes/postmortems/0013-names-copied-out-of-one-machines-config.md) | 字面量要能答「**主人是谁**」：一台机器配置里的名字是快照不是事实。算得出的数字别抄进散文 | 两条测试；散文那半无门 |
 | [14](notes/postmortems/0014-the-runtime-only-strips-headers-it-knows.md) | 跨源重定向摘 `Authorization`，**不摘自定义头**。带凭据的请求默认 `redirect: 'error'` | `test/usage.test.js` |

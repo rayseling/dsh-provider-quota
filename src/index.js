@@ -117,38 +117,43 @@ function readSection(ctx, ns) {
 }
 
 /**
- * Resolve one API key the same way the model routes resolve their own: the
- * configured credential reference through the credentials seam (which layers
- * the managed store over the process environment), then the owning adapter's
- * stored api-key record, then the launch environment — the same last resort
- * the native DeepSeek adapter documents. The value leaves this module only
+ * Resolve one credential reference exactly where the model routes resolve
+ * theirs: through the credentials seam, which layers the managed store over
+ * the process environment, or — in a composition without that seam — the
+ * launch environment, and nowhere else. `llm-pi-ai` and the DeepSeek API-key
+ * adapter both stop with MISSING_CREDENTIAL when a reference misses, and this
+ * returns nothing for the caller to fail on the same way. A seam that throws
+ * is not a miss either; it propagates. The value leaves this module only
  * inside an upstream Authorization header.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
- * @param {string} envName - the credential reference (POSIX identifier).
- * @param {string|undefined} recordOwner - stored-record scope, when this route stores keys.
- * @param {string} recordId - stored-record id under that scope.
- * @returns {Promise<string|undefined>} the key, or nothing when none is configured.
+ * @param {string} ref - the credential reference (POSIX identifier).
+ * @returns {Promise<string|undefined>} the key, or nothing when the reference resolves to nothing.
  */
-async function resolveApiKey(ctx, envName, recordOwner, recordId) {
-  try {
-    var credentials = ctx.get('credentials')
-    if (credentials !== undefined) {
-      var hit = await credentials.resolve(credentialRef(envName))
-      if (hit !== undefined && hit.value.length > 0) return hit.value
-      if (recordOwner !== undefined && isCredentialKeySegment(recordId)) {
-        var record = await credentials.readRecord(credentialKey(recordOwner, recordId))
-        if (record !== undefined && record.kind === 'api-key'
-          && typeof record.key === 'string' && record.key.length > 0) {
-          return record.key
-        }
-      }
-    }
-  } catch (_credentialUnavailable) {
-    // Fall through to the launch environment.
+async function resolveReference(ctx, ref) {
+  var credentials = ctx.get('credentials')
+  if (credentials !== undefined) {
+    var hit = await credentials.resolve(credentialRef(ref))
+    return hit !== undefined && hit.value.length > 0 ? hit.value : undefined
   }
-  var ambient = launchEnvironmentOf(ctx).get(envName)
-  if (ambient !== undefined && ambient.value.length > 0) return ambient.value
-  return undefined
+  var ambient = launchEnvironmentOf(ctx).get(ref)
+  return ambient !== undefined && ambient.value.length > 0 ? ambient.value : undefined
+}
+
+/**
+ * The api-key record an adapter stored for one of its routes, which a model
+ * route falls back to only when its profile names no credential reference.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
+ * @param {string} owner - stored-record scope.
+ * @param {string} id - stored-record id under that scope.
+ * @returns {Promise<string|undefined>} the stored key, when there is one.
+ */
+async function storedApiKey(ctx, owner, id) {
+  var credentials = ctx.get('credentials')
+  if (credentials === undefined || !isCredentialKeySegment(id)) return undefined
+  var record = await credentials.readRecord(credentialKey(owner, id))
+  return record !== undefined && record.kind === 'api-key' && typeof record.key === 'string' && record.key.length > 0
+    ? record.key
+    : undefined
 }
 
 /**
@@ -225,12 +230,24 @@ export function apply(ctx) {
       const section = piSection()
       const profile = section === undefined ? undefined : section.providers?.[provider]
       const isProfile = profile !== null && typeof profile === 'object'
-      const envName = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
-        ? profile.apiKeyEnv : 'OPENCODE_GO_API_KEY'
-      const key = await resolveApiKey(ctx, envName, 'llm-pi-ai', provider) ?? await opencodeAuthJsonKey()
-      if (key === undefined) throw new CodexUsageError('no-credential', 'OpenCode Go API key is not configured')
       const endpoint = httpBase(isProfile && typeof profile.baseURL === 'string' ? profile.baseURL : OPENCODE_GO_BASE_URL)
       if (endpoint === undefined) throw new CodexUsageError('unavailable', 'OpenCode Go usage endpoint is not an absolute URL')
+      // A reference the profile names is the only key this route may use:
+      // `llm-pi-ai` fails the model request when it misses rather than look
+      // anywhere else, and so does this read. Every fallback below is for a
+      // profile that names none — and the OpenCode CLI's key, which the CLI
+      // was issued by opencode.ai, only for the endpoint it was issued for.
+      const named = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
+      const key = named
+        ? await resolveReference(ctx, profile.apiKeyEnv)
+        : await resolveReference(ctx, 'OPENCODE_GO_API_KEY')
+          ?? await storedApiKey(ctx, 'llm-pi-ai', provider)
+          ?? (endpoint === OPENCODE_GO_BASE_URL ? await opencodeAuthJsonKey() : undefined)
+      if (key === undefined) {
+        throw new CodexUsageError('no-credential', named
+          ? 'the credential reference the OpenCode Go route names resolves to nothing'
+          : 'OpenCode Go API key is not configured')
+      }
       return { kind: 'opencode', endpoint, apiKey: key }
     }
     if (provider === 'deepseek-official') {
@@ -243,10 +260,6 @@ export function apply(ctx) {
       // configured for a private endpoint to the public one.
       const profile = nativeSection()
       const isProfile = profile !== null && profile !== undefined && typeof profile === 'object'
-      const envName = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
-        ? profile.apiKeyEnv : 'DEEPSEEK_API_KEY'
-      const key = await resolveApiKey(ctx, envName, undefined, '')
-      if (key === undefined) throw new CodexUsageError('no-credential', 'DeepSeek API key is not configured')
       // Same shape as the OpenCode branch above, and for the same reason: the
       // ternary picks the SOURCE, `httpBase` validates whatever it picked, and
       // a value it cannot use fails the read. Written the other way round —
@@ -261,6 +274,12 @@ export function apply(ctx) {
         : launchEnvironmentOf(ctx).get('DEEPSEEK_BASE_URL')?.value
       const base = httpBase(configured === undefined ? DEEPSEEK_PUBLIC_BASE_URL : configured)
       if (base === undefined) throw new CodexUsageError('unavailable', 'DeepSeek balance endpoint is not an absolute URL')
+      // The adapter's schema defaults the reference, so it is always named:
+      // the key is that reference's, or the read fails like the model route.
+      const ref = isProfile && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
+        ? profile.apiKeyEnv : 'DEEPSEEK_API_KEY'
+      const key = await resolveReference(ctx, ref)
+      if (key === undefined) throw new CodexUsageError('no-credential', 'DeepSeek API key is not configured')
       return { kind: 'deepseek', endpoint: base, apiKey: key }
     }
     return undefined

@@ -34,6 +34,17 @@ function window(used, seconds, resetAt = 1_788_134_407) {
   }
 }
 
+/**
+ * A Codex access token for one ChatGPT account: the account id rides in the
+ * same claim pi-ai reads it from when it builds its own request headers.
+ * @param {string} account - the ChatGPT account id.
+ * @returns {string} an unsigned JWT carrying that claim.
+ */
+function codexToken(account) {
+  const segment = value => Buffer.from(JSON.stringify(value)).toString('base64url')
+  return [segment({ alg: 'none' }), segment({ 'https://api.openai.com/auth': { chatgpt_account_id: account } }), 'sig'].join('.')
+}
+
 function payload(primary, secondary) {
   return {
     plan_type: 'plus',
@@ -117,6 +128,23 @@ describe('host-side usage fetch', () => {
     assert.equal(request.options.headers.Authorization, 'Bearer access_MUST_STAY_HOST_SIDE')
     assert.equal(request.options.headers['ChatGPT-Account-Id'], 'acc_workspace')
     assert.doesNotMatch(JSON.stringify(usage), /access_MUST|acc_workspace/u)
+  })
+
+  test('the account header names the account of the token the request carries', async () => {
+    // The token and the account id used to come from two separate reads of
+    // the store. A sign-in landing between them sent one account's token
+    // under the other account's id.
+    let request
+    await fetchOpenAICodexUsage({
+      resolveAccessToken: async () => codexToken('acc_b'),
+      readCredential: async () => ({ accountId: 'acc_a' }),
+      now: () => NOW,
+      fetch: async (url, options) => {
+        request = options
+        return new Response(JSON.stringify(payload(window(1, WEEK), null)), { status: 200 })
+      },
+    })
+    assert.equal(request.headers['ChatGPT-Account-Id'], 'acc_b')
   })
 
   test('maps sign-out and upstream failures to stable secret-free errors', async () => {
@@ -374,6 +402,39 @@ describe('API-key provider fetches', () => {
   })
 })
 
+describe('a response whose body stalls', () => {
+  test('times out as a timeout in every fetcher, not as a body that was not JSON', async () => {
+    // Headers arrive, then the body stops. The request's deadline still
+    // governs the body read, so it is the deadline that ends it — and the
+    // three fetchers used to blame the payload for that: `invalid-response`,
+    // "did not return JSON", for an endpoint that was merely slow. A real
+    // server and the real fetch, because how an expiring deadline surfaces
+    // mid-body is the runtime's behaviour, not ours.
+    const server = createServer((request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.write('{"partial":')
+    })
+    await new Promise(resolve => { server.listen(0, '127.0.0.1', resolve) })
+    const base = `http://127.0.0.1:${server.address().port}`
+    try {
+      const reads = {
+        codex: () => fetchOpenAICodexUsage({ resolveAccessToken: async () => 'access', readCredential: async () => ({}), endpoint: `${base}/wham/usage`, timeoutMs: 200 }),
+        opencode: () => fetchOpencodeUsage({ endpoint: base, apiKey: 'k', timeoutMs: 200 }),
+        deepseek: () => fetchDeepSeekBalance({ endpoint: base, apiKey: 'k', timeoutMs: 200 }),
+      }
+      for (const [name, read] of Object.entries(reads)) {
+        await assert.rejects(read(), error => {
+          assert.equal(error.code, 'timeout', `${name}: ${error.code} — ${error.message}`)
+          return true
+        })
+      }
+    } finally {
+      server.closeAllConnections()
+      await new Promise(resolve => { server.close(resolve) })
+    }
+  })
+})
+
 describe('provider usage service and RPC', () => {
   const codexValue = () => ({
     planType: 'plus',
@@ -555,6 +616,40 @@ describe('usage cache and trusted RPC', () => {
     accountId = 'account-b'
     assert.equal((await service.get()).weekly.usedPercent, 2)
     assert.equal(calls, 2, 'the second account never receives the first account cache')
+  })
+
+  test('a read that finished on another account is never cached under the one it started on', async () => {
+    // The cache identity is read before the request, the token after it. A
+    // sign-in switching accounts in between filed B's quota under A, and
+    // switching back served it from the cache without reading upstream.
+    const used = { acc_a: 11, acc_b: 77 }
+    let signedIn = 'acc_a'
+    let releaseToken
+    let held = false
+    let upstream = 0
+    const service = createOpenAICodexUsageService({
+      readCredential: async () => ({ accountId: signedIn, access: codexToken(signedIn) }),
+      resolveAccessToken: async () => {
+        if (!held) {
+          held = true
+          await new Promise(resolve => { releaseToken = resolve })
+        }
+        return codexToken(signedIn)
+      },
+      now: () => NOW,
+      fetch: async (url, options) => {
+        upstream++
+        return new Response(JSON.stringify(payload(window(used[options.headers['ChatGPT-Account-Id']], WEEK), null)), { status: 200 })
+      },
+    })
+    const first = service.get()
+    await new Promise(resolve => setImmediate(resolve))
+    signedIn = 'acc_b'
+    releaseToken()
+    assert.equal((await first).weekly.usedPercent, 77, 'the read reports the account whose token it carried')
+    signedIn = 'acc_a'
+    assert.equal((await service.get()).weekly.usedPercent, 11, 'account A must not be answered with B\'s quota')
+    assert.equal(upstream, 2)
   })
 
   test('throttles repeated force attempts even when the first one failed', async () => {
