@@ -4,7 +4,7 @@ Status: implemented
 
 ## 问题
 
-`.agents/skills/` 下装着 write-notes-like-deepseek 套件的八个 skill，它们自带一套启动流程：
+`.agents/skills/` 下装着 write-notes-like-deepseek 套件的 skill，套件自带一套启动流程：
 门禁入口是 .agents/gates.json 加 `run-gates.ts`，字数上限在 .agents/doc-budgets.json，hook 交给 lefthook，
 笔记放 `.agents/notes/`。这几样本仓库都已经有了：门禁入口是 `scripts/check.mjs`，字数上限是
 `scripts/budgets.json` 加 `doc-budget` 门，决策记录在 `notes/implemented/`，复盘在 `notes/postmortems/`。

@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "dsh-agent-experience": {
+      "source": "rayseling/write-notes-like-deepseek",
+      "sourceType": "github",
+      "skillPath": "skills/dsh-agent-experience/SKILL.md",
+      "computedHash": "0519210df04df8ba22aba4c714e034255b66ea9ac95c60cce200379f51cabca6"
+    },
     "dsh-create-upgrade-guide": {
       "source": "rayseling/write-notes-like-deepseek",
       "sourceType": "github",
