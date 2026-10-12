@@ -1,4 +1,6 @@
-# 额度跟着会话当前的模型走，不是一个设置项
+# Agent Note: 额度跟着会话当前的模型走，不是一个设置项
+
+Status: implemented
 
 `9bbf651` · 2026-08-25
 
@@ -37,4 +39,4 @@ openai-codex 给周窗口，opencode-go 给 5h/7d/1m，deepseek 给账户余额�
 - 额度端点（Codex 的 `wham/usage`、OpenCode 的 `/usage`）都是未公开接口。
   上游一改，显示变成「额度暂不可用」，模型请求不受影响。这是刻意的取舍。
 - 从设置里读路由配置这件事，后来咬了一次
-  ——见 [`0002`](../postmortems/0002-property-accessor-without-inject.md)。
+  ——见 [`0002`](../../postmortems/0002-property-accessor-without-inject.md)。

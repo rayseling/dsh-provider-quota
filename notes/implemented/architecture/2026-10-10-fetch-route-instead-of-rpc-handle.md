@@ -1,4 +1,6 @@
-# 0.7.0：额度路由改走 Connection 的 `fetch.register`，不再要求宿主打补丁
+# Agent Note: 0.7.0：额度路由改走 Connection 的 `fetch.register`，不再要求宿主打补丁
+
+Status: implemented
 
 ## 问题
 
@@ -33,7 +35,7 @@ Connection 的 `fetchRoutes` Map 写一条；真正的 HTTP 路由是 Connection
 
 顺带修了一个被掩盖的 bug：Handler 的失败结果从前没有 `details`，而 Connection 客户端把缺 `details` 的失败当成
 非法信封抛 TypeError，胶囊因此永远显示「不可用」而不是真实原因（`auth`、`signed-out`…）。现在每个失败码都带
-`details: {}`。经过见 [postmortem 0016](../postmortems/0016-a-failure-without-details.md)。
+`details: {}`。经过见 [postmortem 0016](../../postmortems/0016-a-failure-without-details.md)。
 
 ## 考虑过的方案
 

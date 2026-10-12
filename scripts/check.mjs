@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsh-provider-quota gates: nine independent collectors plus a runner.
+ * dsh-provider-quota gates: independent collectors plus a runner.
  *
  * `npm test` runs this, not `node --test` — see AGENTS.md. The suite alone
  * cannot be the gate, because a checkout without the peer dependencies
@@ -26,10 +26,11 @@
  *    prints the ones in force — not only `--exemptions`, which nothing
  *    requires anyone to pass.
  *
- * There is no gate graph here on purpose. Eleven checks, no edges, under a
- * second without the suite: a `for` loop that accumulates failures and exits 1
- * is the whole scheduler. Revisit if a gate crosses ten seconds or grows a
- * real dependency edge.
+ * There is no gate graph here on purpose. No check depends on another, and all
+ * of them but the suite finish in a couple of seconds: a `for` loop that
+ * accumulates failures and exits 1 is the whole scheduler. Revisit if a gate
+ * crosses ten seconds or grows a real dependency edge. The runner prints the
+ * gate list it computed; no count of it is written down anywhere.
  *
  * @module dsh-provider-quota/scripts/check
  */
@@ -1548,6 +1549,176 @@ export function collectWorkflowViolations(root) {
 }
 
 // ---------------------------------------------------------------------------
+// gates: notes, md-links — skill scripts vendored under .agents/skills/
+// ---------------------------------------------------------------------------
+
+/** Where `npx skills add` puts the note checks, relative to the checkout root. */
+const NOTE_SCRIPTS = '.agents/skills/write-notes-like-deepseek/scripts'
+
+/** Where `npx skills add` puts the link check, relative to the checkout root. */
+const MD_LINKS_SCRIPT = '.agents/skills/dsh-gate-every-rule/scripts/verify-md-links.ts'
+
+/** The install that restores both. `codex` keeps the canonical .agents/skills/ copy. */
+const SKILLS_INSTALL = 'npx skills@1.7.1 add rayseling/write-notes-like-deepseek --agent codex claude-code -y'
+
+/**
+ * Run a script vendored under `.agents/skills/` from the checkout root.
+ *
+ * The scripts are TypeScript, run by `node` itself: type stripping is on by
+ * default from Node 22.18, which CI's `node-version: '22'` resolves past. Not
+ * `npx tsx`, which the skills document — it needs a resolvable node_modules,
+ * and this checkout's is a symlink into a dsh profile.
+ *
+ * The variables that choose WHAT a script checks — `AGENT_NOTE_ROOT`,
+ * `AGENT_NOTE_IGNORE`, `AGENT_MD_LINKS_EXCLUDE` — are set here and override the
+ * caller's, so one left in someone's shell cannot point a check at another
+ * tree, or at nothing, while the summary still reports a pass.
+ * `AGENT_NOTE_ARCHIVE_BASE_REF` passes through: it only moves the commit the
+ * archive seals are compared with, and CI may set it to the one before a push.
+ * `NODE_OPTIONS` goes for the reason the suite drops it.
+ * @param {string} root - checkout to run in.
+ * @param {string} rel - script path, relative to the root.
+ * @param {Record<string, string>} vars - the `AGENT_*` settings that fix the scope.
+ * @returns {{status: number | null, output: string, failure?: string}} the
+ *   exit status and combined output; `failure` is set when the script could
+ *   not report at all.
+ */
+function runVendoredScript(root, rel, vars) {
+  if (!existsSync(join(root, rel))) {
+    return {
+      status: null,
+      output: '',
+      failure: `${rel}: missing, so the check it runs did not happen. `
+        + 'A gate whose checker is gone must not read as a gate with nothing to report. '
+        + `Reinstall the skills with \`${SKILLS_INSTALL}\`.`,
+    }
+  }
+  const env = { ...process.env }
+  delete env.NODE_OPTIONS
+  delete env.NODE_TEST_CONTEXT
+  const run = spawnSync(process.execPath, [rel], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
+    env: { ...env, ...vars, NODE_NO_WARNINGS: '1' },
+  })
+  const output = `${run.stdout ?? ''}\n${run.stderr ?? ''}`
+  if (run.error !== undefined || run.signal !== null) {
+    return {
+      status: run.status,
+      output,
+      failure: `${rel}: did not finish (${run.error?.message ?? run.signal}), so no result exists. `
+        + `Run \`node ${rel}\` from the checkout root and read what it prints.`,
+    }
+  }
+  if (/ERR_UNKNOWN_FILE_EXTENSION/u.test(output)) {
+    return {
+      status: run.status,
+      output,
+      failure: `${rel}: Node ${process.version} cannot run TypeScript, so the check never ran. `
+        + 'Type stripping is on by default from Node 22.18; run the gates under a Node that has it.',
+    }
+  }
+  return { status: run.status, output }
+}
+
+/**
+ * Every decision record under notes/ has the Agent Note shape: a
+ * lifecycle/class/date path, the `# Agent Note:` and `Status:` lines, and the
+ * required sections — the alternatives one included.
+ *
+ * notes/README.md stated the four-section rule long before anything enforced
+ * it. The checks are the write-notes-like-deepseek skill's three scripts, run
+ * unmodified; this collector fixes their scope, maps their paths back onto the
+ * repository, and turns an absent script into a failure. A structure error is
+ * reported by both the tree and the format script, so lines are de-duplicated.
+ *
+ * Scope: `AGENT_NOTE_ROOT=notes` with `AGENT_NOTE_IGNORE=postmortems` —
+ * incident stories have their own shape. The files at the top of notes/
+ * (README.md, local-setup.md) are not records and are not walked.
+ *
+ * Not proved: that the alternatives were really weighed. The archive seals
+ * are compared with HEAD, which in a clean checkout is the manifest compared
+ * with itself; the seal-against-disk half still runs.
+ * @param {string} root - checkout to run in.
+ * @param {{notes?: number}} [stats] - receives the count the format check verified.
+ * @returns {string[]} one message per violation.
+ */
+export function collectNoteViolations(root, stats = {}) {
+  const violations = []
+  const seen = new Set()
+  for (const name of ['verify-agent-note-tree', 'verify-agent-note-format', 'verify-archived-agent-notes']) {
+    const rel = `${NOTE_SCRIPTS}/${name}.ts`
+    const run = runVendoredScript(root, rel, { AGENT_NOTE_ROOT: 'notes', AGENT_NOTE_IGNORE: 'postmortems' })
+    if (run.failure !== undefined) {
+      violations.push(run.failure)
+      continue
+    }
+    const counted = /^ok: (\d+) note\(s\) verified$/mu.exec(run.output)
+    if (counted !== null) stats.notes = Number(counted[1])
+    if (run.status === 0) continue
+    const lines = run.output.split('\n').map(line => line.trim())
+      .filter(line => line.length > 0 && !line.startsWith('warning:'))
+    if (lines.length === 0) {
+      violations.push(`${rel}: exited ${run.status} without naming a note, so there is nothing to fix and nothing proved. Run \`node ${rel}\` with AGENT_NOTE_ROOT=notes and read what it prints.`)
+    }
+    for (const line of lines) {
+      if (seen.has(line)) continue
+      seen.add(line)
+      const located = /^(?:structure|format|link): (\S+) (.*)$/u.exec(line)
+      violations.push(
+        `${located === null ? `notes: ${line}` : `notes/${located[1]} ${located[2]}`}. `
+        + 'A decision record out of this shape is the one the next reader cannot find, or cannot tell is current; the shape is in notes/README.md. '
+        + `Fix the note, not ${rel}: it is vendored, and the next reinstall puts it back.`,
+      )
+    }
+  }
+  return violations
+}
+
+/**
+ * Every relative Markdown link in the checkout resolves, `#fragment` included.
+ *
+ * doc-refs resolves link PATHS in AGENTS.md, README.md and notes/, but drops
+ * everything after `#`, so a link to a heading that was renamed passed while
+ * landing the reader at the top of the file. This runs the
+ * dsh-gate-every-rule skill's verify-md-links.ts, unmodified, which also
+ * resolves anchors against GitHub heading slugs and explicit `<a id>`.
+ *
+ * Scope is every `.md` in the checkout, the vendored skills' documents
+ * included — an agent here follows their links too. `.claude/` is left out:
+ * it holds per-user files git never sees, and the skills under it are
+ * symlinks into .agents/skills/, which is scanned under its own name.
+ *
+ * Not proved: external URLs and root-absolute paths, which are not checked.
+ * @param {string} root - checkout to run in.
+ * @param {{files?: number}} [stats] - receives the count of files scanned.
+ * @returns {string[]} one message per violation.
+ */
+export function collectMdLinkViolations(root, stats = {}) {
+  const run = runVendoredScript(root, MD_LINKS_SCRIPT, { AGENT_MD_LINKS_EXCLUDE: '.claude/' })
+  if (run.failure !== undefined) return [run.failure]
+  const counted = /(\d+) file\(s\) checked/u.exec(run.output)
+  if (counted !== null) stats.files = Number(counted[1])
+  if (run.status === 0) return []
+  const violations = []
+  for (const line of run.output.split('\n')) {
+    const hit = /^\s*(\S+?):(\d+)\s+(\S+)\s+\((.+)\)$/u.exec(line)
+    if (hit === null) continue
+    violations.push(
+      `${hit[1]}:${hit[2]}: the link \`${hit[3]}\` — ${hit[4]}. `
+      + 'A link that lands somewhere else reads exactly like one that works. '
+      + 'Fix the target, or the heading it names: anchors are GitHub heading slugs.',
+    )
+  }
+  if (violations.length === 0) {
+    violations.push(`${MD_LINKS_SCRIPT}: exited ${run.status} without naming a link, so there is nothing to fix and nothing proved. Run \`node ${MD_LINKS_SCRIPT}\` from the checkout root and read what it prints.`)
+  }
+  return violations
+}
+
+// ---------------------------------------------------------------------------
 // gate: suite
 // ---------------------------------------------------------------------------
 
@@ -1781,6 +1952,8 @@ function gates(root, { bare = false } = {}) {
   const harnessNote = harness === undefined
     ? 'no harness checkout reachable'
     : `harness citations checked against ${harness}`
+  const noteStats = {}
+  const linkStats = {}
   return [
     {
       id: 'identity',
@@ -1834,6 +2007,16 @@ function gates(root, { bare = false } = {}) {
       id: 'remote-codes',
       run: () => collectRemoteCodeViolations(root, harness),
       summary: () => `remote-codes: every \`.code === '…'\` in ${REMOTE_CONSUMER} resolved against the harness's declared \`RemoteErrorDetailsMap\`, and every code \`${CODE_CONSUMER}\` branches on against what ${CODE_PRODUCERS.join(' / ')} mint; ${harnessNote}. Proves the code exists, not that this endpoint can send it.`,
+    },
+    {
+      id: 'notes',
+      run: () => collectNoteViolations(root, noteStats),
+      summary: () => `notes: ${noteStats.notes ?? '?'} decision record(s) under notes/ in the Agent Note shape — path, header lines, required sections — plus the archive seals; postmortems/ is not walked. Proves the shape, not that the alternatives were really weighed.`,
+    },
+    {
+      id: 'md-links',
+      run: () => collectMdLinkViolations(root, linkStats),
+      summary: () => `md-links: ${linkStats.files ?? '?'} Markdown file(s), every relative link and #fragment resolves (.claude/ is per-user and left out). Proves the reader lands on a real heading, not on the right one.`,
     },
     {
       id: 'suite',

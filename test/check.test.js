@@ -36,6 +36,8 @@ import {
   collectDocSymbolViolations,
   collectRemoteCodeViolations,
   collectIdentityViolations,
+  collectMdLinkViolations,
+  collectNoteViolations,
   collectServiceReadViolations,
   collectSuiteViolations,
   collectWorkflowViolations,
@@ -71,6 +73,41 @@ async function fixture(files) {
 
 /** A minimal package.json a fixture that only needs dependencies can start from. */
 const MANIFEST = JSON.stringify({ name: 'dsh-provider-quota', peerDependencies: { 'some-pkg': '*' } })
+
+/**
+ * Link the vendored skills into a fixture where `npx skills add` puts them,
+ * so a gate runs this checkout's copy of the scripts against the fixture.
+ * @param {string} root - fixture root.
+ * @param {string[]} names - skill directories under .agents/skills/.
+ */
+async function linkSkills(root, names) {
+  await mkdir(join(root, '.agents', 'skills'), { recursive: true })
+  for (const name of names) {
+    await symlink(join(REPO_ROOT, '.agents', 'skills', name), join(root, '.agents', 'skills', name))
+  }
+}
+
+/**
+ * Run with one environment variable set, as if left in someone's shell.
+ * @param {string} name - variable name.
+ * @param {string} value - its value for the duration.
+ * @param {() => void} fn - the code to run.
+ */
+function withEnv(name, value, fn) {
+  const saved = process.env[name]
+  process.env[name] = value
+  try {
+    fn()
+  } finally {
+    if (saved === undefined) delete process.env[name]
+    else process.env[name] = saved
+  }
+}
+
+/** The message both vendored-script gates give when `npx skills add` never ran. */
+const missingScript = rel => `${rel}: missing, so the check it runs did not happen. `
+  + 'A gate whose checker is gone must not read as a gate with nothing to report. '
+  + 'Reinstall the skills with `npx skills@1.7.1 add rayseling/write-notes-like-deepseek --agent codex claude-code -y`.'
 
 // ---------------------------------------------------------------------------
 
@@ -927,6 +964,124 @@ jobs:
         .replace('      - run: node scripts/check.mjs --bare\n', '      - run: echo done\n        if: always()\n'),
     })
     assert.equal(collectWorkflowViolations(root).length, 1, 'a step-level always() must not stand in for the job-level one')
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('gate: notes', () => {
+  const NOTE = [
+    '# Agent Note: 样例', '', 'Status: implemented', '',
+    '## 问题', '', '甲。', '',
+    '## 决定', '', '乙。', '',
+    '## 考虑过的方案', '', '- **丙**：最快；没选是因为不安全。', '',
+    '## 后果', '', '丁。', '',
+  ].join('\n')
+  const SCRIPTS = '.agents/skills/write-notes-like-deepseek/scripts'
+  const TAIL = 'A decision record out of this shape is the one the next reader cannot find, or cannot tell is current; the shape is in notes/README.md. '
+
+  test('accepts a record in the Agent Note shape, and walks neither postmortems/ nor the top-level files', async () => {
+    const root = await fixture({
+      'notes/implemented/process/2026-10-12-sample.md': NOTE,
+      'notes/postmortems/0001-anything.md': '# 0001 · 一次事故\n',
+      'notes/README.md': '# 决策记录\n',
+      'notes/local-setup.md': '# 本地安装\n',
+    })
+    await linkSkills(root, ['write-notes-like-deepseek'])
+    const stats = {}
+    assert.deepEqual(collectNoteViolations(root, stats), [])
+    assert.equal(stats.notes, 1)
+  })
+
+  test('rejects a record without its alternatives — the rule notes/README.md stated and nothing enforced', async () => {
+    const root = await fixture({
+      'notes/implemented/process/2026-10-12-sample.md': NOTE.replace(/## 考虑过的方案[\s\S]*?(?=## 后果)/u, ''),
+    })
+    await linkSkills(root, ['write-notes-like-deepseek'])
+    assert.deepEqual(collectNoteViolations(root), [
+      'notes/implemented/process/2026-10-12-sample.md — missing ## Alternatives considered / ## 备选方案 / ## 考虑过的方案. '
+      + TAIL
+      + `Fix the note, not ${SCRIPTS}/verify-agent-note-format.ts: it is vendored, and the next reinstall puts it back.`,
+    ])
+  })
+
+  test('reports a record outside a class folder once, though two of the scripts walk the tree', async () => {
+    const root = await fixture({ 'notes/implemented/2026-10-12-sample.md': NOTE })
+    await linkSkills(root, ['write-notes-like-deepseek'])
+    assert.deepEqual(collectNoteViolations(root), [
+      'notes/implemented/2026-10-12-sample.md — expected {lifecycle}/{class}/file.md (got depth 2). '
+      + TAIL
+      + `Fix the note, not ${SCRIPTS}/verify-agent-note-tree.ts: it is vendored, and the next reinstall puts it back.`,
+    ])
+  })
+
+  test('an AGENT_NOTE_ROOT left in the shell cannot point it at another tree', async () => {
+    // The scripts read their root from the environment. Inherited, an
+    // empty directory there makes every note vanish and the gate pass.
+    const root = await fixture({ 'notes/implemented/2026-10-12-sample.md': NOTE })
+    await linkSkills(root, ['write-notes-like-deepseek'])
+    const elsewhere = await fixture({})
+    withEnv('AGENT_NOTE_ROOT', elsewhere, () => {
+      assert.equal(collectNoteViolations(root).length, 1, 'the misplaced record is still found')
+    })
+  })
+
+  test('fails loudly when the vendored scripts are missing, rather than finding nothing to report', async () => {
+    const root = await fixture({ 'notes/implemented/process/2026-10-12-sample.md': NOTE })
+    assert.deepEqual(
+      collectNoteViolations(root),
+      ['verify-agent-note-tree', 'verify-agent-note-format', 'verify-archived-agent-notes'].map(name => missingScript(`${SCRIPTS}/${name}.ts`)),
+    )
+  })
+
+  test('runs in a bare checkout, so CI holds the records to the shape', () => {
+    assert.ok(bareGateIds().includes('notes'))
+  })
+})
+
+describe('gate: md-links', () => {
+  const RULES = '# 规则\n\n## 先读这里\n\n正文。\n'
+
+  test('accepts a link whose file and heading both exist', async () => {
+    const root = await fixture({ 'AGENTS.md': '见 [规则](notes/rules.md#先读这里)。\n', 'notes/rules.md': RULES })
+    await linkSkills(root, ['dsh-gate-every-rule'])
+    const stats = {}
+    assert.deepEqual(collectMdLinkViolations(root, stats), [])
+    assert.equal(stats.files, 2)
+  })
+
+  test('rejects a heading that is gone — the half of a link doc-refs drops', async () => {
+    const root = await fixture({ 'AGENTS.md': '见 [规则](notes/rules.md#改过名的标题)。\n', 'notes/rules.md': RULES })
+    await linkSkills(root, ['dsh-gate-every-rule'])
+    assert.deepEqual(collectDocRefViolations(root, undefined), [], 'doc-refs resolves the path and stops at the #')
+    assert.deepEqual(collectMdLinkViolations(root), [
+      'AGENTS.md:1: the link `notes/rules.md#改过名的标题` — no such anchor in target. '
+      + 'A link that lands somewhere else reads exactly like one that works. '
+      + 'Fix the target, or the heading it names: anchors are GitHub heading slugs.',
+    ])
+  })
+
+  test('an AGENT_MD_LINKS_EXCLUDE left in the shell cannot hide a file', async () => {
+    const root = await fixture({ 'AGENTS.md': '见 [规则](notes/rules.md#改过名的标题)。\n', 'notes/rules.md': RULES })
+    await linkSkills(root, ['dsh-gate-every-rule'])
+    withEnv('AGENT_MD_LINKS_EXCLUDE', 'AGENTS.md', () => {
+      assert.equal(collectMdLinkViolations(root).length, 1, 'the dead anchor is still found')
+    })
+  })
+
+  test('leaves .claude/ out: per-user files git never sees', async () => {
+    const root = await fixture({ '.claude/RESUME.md': '[去处](nowhere.md)\n', 'README.md': '# 说明\n' })
+    await linkSkills(root, ['dsh-gate-every-rule'])
+    assert.deepEqual(collectMdLinkViolations(root), [])
+  })
+
+  test('fails loudly when the vendored script is missing', async () => {
+    const root = await fixture({ 'README.md': '# 说明\n' })
+    assert.deepEqual(collectMdLinkViolations(root), [missingScript('.agents/skills/dsh-gate-every-rule/scripts/verify-md-links.ts')])
+  })
+
+  test('runs in a bare checkout, so CI catches a dead anchor', () => {
+    assert.ok(bareGateIds().includes('md-links'))
   })
 })
 

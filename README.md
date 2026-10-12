@@ -131,11 +131,11 @@ dsh plugin --profile web remove dsh-provider-quota
 
 ## 给改代码的人
 
-先看 **[AGENTS.md](./AGENTS.md)**：那里是**出错时不报错**的坑、`npm test` 的九道门、
+先看 **[AGENTS.md](./AGENTS.md)**：那里是**出错时不报错**的坑、`npm test` 的门禁、
 以及每道门盖不到的地方。每条坑各有一篇完整复盘在 [`notes/postmortems/`](./notes/postmortems/)，
-设计理由在 [`notes/implemented/`](./notes/implemented/README.md)，
+设计理由在 [`notes/implemented/`](./notes/README.md)，
 本地安装与迭代的步骤在 [`notes/local-setup.md`](./notes/local-setup.md)。
 
 ```sh
-npm test    # 九道门 + 整套测试；这是唯一算数的那个命令
+npm test    # 全部门禁 + 整套测试；这是唯一算数的那个命令
 ```

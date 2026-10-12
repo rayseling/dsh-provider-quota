@@ -1,4 +1,6 @@
-# 0.6.0：改名 dsh-provider-quota，并且不再登记 settings section
+# Agent Note: 0.6.0：改名 dsh-provider-quota，并且不再登记 settings section
+
+Status: implemented
 
 ## 问题
 

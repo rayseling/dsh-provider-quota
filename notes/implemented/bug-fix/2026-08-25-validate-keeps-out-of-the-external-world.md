@@ -1,4 +1,6 @@
-# `validate` 里不放依赖外部世界的检查
+# Agent Note: `validate` 里不放依赖外部世界的检查
+
+Status: implemented
 
 > **0.5.0 起本仓库不再有这段代码**：模型路由交回宿主的 `llm-pi-ai`，本文留档，再写同类代码时先读它。下面的符号名是当时的，本仓库已查不到。
 
@@ -12,7 +14,7 @@ SettingsProvider.installSection（当时叫 installSettingsSection；0.1.7-alpha
 但这个钩子在 seam **解析**这份设置时也会跑，也就是每次启动一遍。
 一旦它抛异常，整份 section 被拒绝——包括同一份设置里毫不相干的字段。
 pi-ai 升级改名或下架一个模型，就够让用户设的上下文长度在下次启动时蒸发。
-完整故事见 [`0001`](../postmortems/0001-settings-validate-runs-on-read.md)。
+完整故事见 [`0001`](../../postmortems/0001-settings-validate-runs-on-read.md)。
 
 ## 决定
 

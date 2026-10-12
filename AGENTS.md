@@ -2,6 +2,12 @@
 
 > 给**任何**改动本仓库的人和 agent 看。`CLAUDE.md` 是指向这里的软链，别在那边另写一份。
 
+## 这是什么
+
+dsh 插件：会话标题旁的额度胶囊。宿主侧 `src/index.js` 把额度路由挂上 Connection 的 `/api`（`src/rpc-route.js`）；
+`src/usage.js` 取各 provider 额度，`src/credentials.js`、`src/token.js` 管 Codex 凭据，`src/client.js` 是浏览器里的胶囊。
+门在 `scripts/check.mjs`，设计理由与复盘在 [`notes/`](notes/README.md)，装进来的 skill 在 `.agents/skills/`（`.claude/skills/` 是软链）。
+
 ## 已经咬过人的坑
 
 共同点：没有异常、没有红字，只有一个看起来正常、内容已被悄悄换掉的结果。
@@ -27,12 +33,10 @@
 坑 [3](notes/postmortems/0003-image-budget-fields-must-travel-together.md)（图片预算三字段）和
 [4](notes/postmortems/0004-listmodels-narrows-every-catalog-reader.md)（`listModels` 收窄）随模型路由在 0.5.0 移出本仓库。
 
-设计理由在 [`notes/implemented/`](notes/implemented/README.md)。
-
 ## 门禁：`npm test`
 
 ```sh
-npm test            # 九道门 + 整套测试；这是唯一算数的那个命令
+npm test            # 全部门禁 + 整套测试；这是唯一算数的那个命令
 npm run test:raw    # 只跑 node --test，紧编辑循环用——不是证据
 node scripts/check.mjs --only=<门名>    # 单跑一道
 node scripts/check.mjs --exemptions     # 列出每一条豁免
@@ -40,7 +44,7 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 
 **每道门的机制、作用域、以及它证明不了什么，写在对应 collector 的
 头注释里**。最要命的一条：**`scripts.test` 必须还在跑 `node scripts/check.mjs`**，
-改掉它九道门当场消失而 `npm test` 照印绿色（`identity` 门管）。
+改掉它所有门当场消失而 `npm test` 照印绿色（`identity` 门管）。
 
 **CI 跑 `--bare`：除够不到 harness 的那几道外全部**（它们没有 harness 就报红，留本地）。
 裸模式**反着定义**，新加的门默认进 CI；是哪几道它自己打印。
@@ -48,16 +52,9 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 
 ### skip 不是通过，todo 也不是
 
-`node --test` 单独跑**会撒谎**：跳掉的 `describe` 子树哪个计数都不进，
-照样 `# skipped 0`、退出码 0（机制在 `collectSuiteViolations` 头注释里）。
-
-- 那两份 skip 守卫（`host`/`credentials`）是给别人在裸检出里读代码用的，
-  不是给本仓库改动留的口子。**提交前零 skip。**
-- `{ todo: '...' }` 同样禁止：它照常跑、照常抛，而摘要报 `# fail 0`。门同时看
-  `# todo`、`# cancelled` 和任何一行 `not ok`。
-- 要跑全部得先软链一棵 node_modules，见 [`notes/local-setup.md`](notes/local-setup.md)。
-- `scripts/expected.json` 的 `tests` 是**唯一一个改一下就能把红变绿的数字**，
-  **只许和加/删测试同一个 commit 改**。改成字符串或删掉 key 也不行，门会拒。
+`node --test` 单独跑**会撒谎**：跳掉的子树哪个计数都不进，照样退出码 0（机制在 `collectSuiteViolations` 头注释里）。
+**提交前零 skip、零 todo**，`suite` 门管；要跑全部先软链 node_modules，见 [`notes/local-setup.md`](notes/local-setup.md)。
+`scripts/expected.json` 的 `tests` 是**唯一一个改一下就能把红变绿的数字**，**只许和加/删测试同一个 commit 改**。
 
 ### 改了什么 → 跑什么
 
@@ -76,13 +73,12 @@ node scripts/check.mjs --exemptions     # 列出每一条豁免
 - **`src/client.js` 的行为测试只到胶囊本体**（假 React）：余额那支面板从不调用，换成 `throw`
   照样全绿；样式和真实 hook 时机只能人去看 `dsh web`。
 - **凭据记录的跨进程互斥没测过**：`modifyRecord` 的锁只在一个进程里跑过。`cordis.patch.yml` 只比字符串。
-- **`npm install` 装不起来**（传递 peer 404）。`deps` 管的是清单**诚实**，不是可安装性。
-- **CI 绿不代表文档引用和失败码解析得到**，也不代表 peer 测试跑过——它们在 CI 里从不执行。
+- **CI 绿不代表反引号引用和失败码解析得到**，也不代表 peer 测试跑过——它们在 CI 里从不执行。
 - **每道门自己会打印它证明不了什么**，那份比这里全，包括已知绕得过去的写法。
 
 ### 写测试和写门时
 
-四条常驻规则，理由见 [`what-a-gate-must-prove`](notes/implemented/2026-08-25-what-a-gate-must-prove.md)：
+四条常驻规则，理由见 [`what-a-gate-must-prove`](notes/implemented/process/2026-08-25-what-a-gate-must-prove.md)：
 
 1. **断言行为，不断言字段存在**（坑 3 就是这么漏的）。
 2. **断言外部可观测的事实**，不断言被测对象自己的说法；也别把常量喂进去再断言它出现（坑 5）。

@@ -33,7 +33,7 @@ export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'   ← 被吞
 **home 在 [`AGENTS.md`](../../AGENTS.md) 的坑表。**这里只补边界：
 
 修一道门的时候，先问「这一类还有哪些写法」，而不是「怎么让这个样本变红」——
-这条在 [`what-a-gate-must-prove`](../implemented/2026-08-25-what-a-gate-must-prove.md)
+这条在 [`what-a-gate-must-prove`](../implemented/process/2026-08-25-what-a-gate-must-prove.md)
 里已经是决定，本文是它第三次被证实。
 
 ## 守住它的门

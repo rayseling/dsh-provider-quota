@@ -1,4 +1,6 @@
-# 卡片只写给 rc.8 的 mirror，不同时迁就两个宿主
+# Agent Note: 卡片只写给 rc.8 的 mirror，不同时迁就两个宿主
+
+Status: implemented
 
 `a39aac3` · 2026-08-20
 
