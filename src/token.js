@@ -35,7 +35,7 @@ const CREDENTIAL_TIMEOUT_MS = 20_000
  * to stay under both.
  *
  * {@link CREDENTIAL_TIMEOUT_MS}, so the credential record's document lock is
- * released while the caller is still waiting. And pi-ai 0.85.1's own 15s
+ * released while the caller is still waiting. And pi-ai 1.3.0's own 15s
  * `AbortSignal.timeout` around `refresh`, armed in
  * `@earendil-works/pi-ai/dist/auth/resolve.js`, so that the deadline which
  * fires first is always the one {@link boundedRefreshProvider} raises — the
@@ -84,7 +84,7 @@ const REFRESH_TIMEOUT_MARKER = 'dsh-provider-quota: OpenAI Codex token refresh d
 /**
  * pi-ai's own wording for a refresh whose `fetch` never produced a response —
  * DNS failure, a dropped link, a proxy refusing the connection. Copied from
- * `pi-ai/dist/auth/oauth/openai-codex.js` (0.85.1), where it reads
+ * `pi-ai/dist/auth/oauth/openai-codex.js` (1.3.0), where it reads
  * `OpenAI Codex token refresh error: ${cause}`.
  */
 const REFRESH_TRANSPORT_PREFIX = 'OpenAI Codex token refresh error:'
@@ -119,7 +119,7 @@ const REFRESH_STATUS = /OpenAI Codex token (?:refresh|exchange) failed \((\d{3})
  * `Error` at the refresh site and the `ModelsError` that carries it upward
  * folds that text into its own message. Wording is therefore this plugin's
  * dependency on pi-ai as much as the function signatures are; the tests pin
- * the exact strings 0.85.1 emits, so a rewording upstream fails a test here
+ * the exact strings 1.3.0 emits, so a rewording upstream fails a test here
  * rather than silently downgrading every blip back to `AUTH`.
  * @param {unknown} error - thrown value.
  * @returns {string} the seam error code to report it under.

@@ -1,6 +1,6 @@
 /**
  * Unit tests for the redactor. Every "leaks" case is a message shape pi-ai
- * 0.85.1 actually constructs, quoted from `dist/auth/oauth/openai-codex.js`,
+ * 1.3.0 actually constructs, quoted from `dist/auth/oauth/openai-codex.js`,
  * so a provider change that moves a secret into a new shape fails here rather
  * than in someone's terminal scrollback.
  */
@@ -13,7 +13,7 @@ import { redactSecrets, safeMessage } from '../src/redact.js'
 const SECRET = 'rt_01JQZZ_TOP_SECRET_VALUE'
 
 describe('redactSecrets: shapes pi-ai throws', () => {
-  test('token exchange response, the login path (openai-codex.js:104)', () => {
+  test('token exchange response, the login path (openai-codex.js:100)', () => {
     const body = JSON.stringify({
       access_token: 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1In0.SIGNATURE',
       refresh_token: SECRET,
@@ -34,7 +34,7 @@ describe('redactSecrets: shapes pi-ai throws', () => {
     assert.match(out, /OAuth refresh failed for openai-codex/u, 'the diagnostic survives')
   })
 
-  test('device auth token response (openai-codex.js:196)', () => {
+  test('device auth token response (openai-codex.js:193)', () => {
     const out = redactSecrets(
       'Invalid OpenAI Codex device auth token response:'
       + ' {"authorization_code":"ac_SECRET","code_verifier":"cv_SECRET","user_code":"ABCD-EFGH"}',
@@ -43,7 +43,7 @@ describe('redactSecrets: shapes pi-ai throws', () => {
     assert.match(out, /"user_code":"ABCD-EFGH"/u, 'the device code is meant to be read aloud')
   })
 
-  test('device code request response (openai-codex.js:167)', () => {
+  test('device code request response (openai-codex.js:164)', () => {
     // pi-ai polls the device token endpoint with `device_auth_id` and
     // `user_code` and nothing else, so quoting both is quoting the grant. The
     // user code stays legible because the operator has to read it aloud; its
@@ -57,7 +57,7 @@ describe('redactSecrets: shapes pi-ai throws', () => {
     assert.doesNotMatch(redactSecrets('{"deviceAuthId":"da_SECRET"}'), /da_SECRET/u)
   })
 
-  test('non-2xx token response quoting the raw body (openai-codex.js:99)', () => {
+  test('non-2xx token response quoting the raw body (openai-codex.js:95)', () => {
     const out = redactSecrets(`OpenAI Codex token refresh failed (400): {"error":"invalid_grant","refresh_token":"${SECRET}"}`)
     assert.doesNotMatch(out, new RegExp(SECRET, 'u'))
     assert.match(out, /"error":"invalid_grant"/u)
