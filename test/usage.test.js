@@ -261,7 +261,7 @@ describe('shipped bases compose into the endpoints they are meant to reach', () 
   test('OPENCODE_GO_BASE_URL keeps the version segment the /usage suffix needs', async () => {
     assert.equal(
       await requestedUrl(fetchOpencodeUsage, OPENCODE_GO_BASE_URL, JSON.stringify({ usage: { rolling: { percent: 1 } } })),
-      'https://opencode.ai/zen/go/v1/usage',
+      'https://opencode.ai/inference/go/v1/usage',
     )
   })
 
@@ -295,7 +295,7 @@ describe('API-key provider fetches', () => {
   test('OpenCode: bearer plus x-api-key upstream, nothing secret in the result', async () => {
     let request
     const usage = await fetchOpencodeUsage({
-      endpoint: 'https://opencode.ai/zen/go/v1',
+      endpoint: 'https://opencode.ai/inference/go/v1',
       apiKey: 'sk_MUST_STAY_HOST_SIDE',
       now: () => NOW,
       fetch: async (url, options) => {
@@ -303,7 +303,7 @@ describe('API-key provider fetches', () => {
         return new Response(JSON.stringify({ usage: { rolling: { percent: 10, resetsAt: '2026-08-20T17:00:00.000Z' } } }), { status: 200 })
       },
     })
-    assert.equal(request.url, 'https://opencode.ai/zen/go/v1/usage')
+    assert.equal(request.url, 'https://opencode.ai/inference/go/v1/usage')
     assert.equal(request.options.headers.Authorization, 'Bearer sk_MUST_STAY_HOST_SIDE')
     assert.equal(request.options.headers['x-api-key'], 'sk_MUST_STAY_HOST_SIDE')
     assert.doesNotMatch(JSON.stringify(usage), /MUST_STAY/u)
@@ -470,7 +470,7 @@ describe('provider usage service and RPC', () => {
     const deepseekCalls = []
     const service = createProviderUsageService({
       resolveRoute: async provider => {
-        if (provider === 'opencode-go') return { kind: 'opencode', endpoint: 'https://opencode.ai/zen/go/v1', apiKey: 'k1' }
+        if (provider === 'opencode-go') return { kind: 'opencode', endpoint: 'https://opencode.ai/inference/go/v1', apiKey: 'k1' }
         if (provider === 'deepseek-official') return { kind: 'deepseek', endpoint: 'https://api.deepseek.com', apiKey: 'k2' }
         return undefined
       },
@@ -509,7 +509,7 @@ describe('provider usage service and RPC', () => {
     let upstream = 0
     let apiKey = 'k_FIRST'
     const service = createProviderUsageService({
-      resolveRoute: async () => ({ kind: 'opencode', endpoint: 'https://opencode.ai/zen/go/v1', apiKey }),
+      resolveRoute: async () => ({ kind: 'opencode', endpoint: 'https://opencode.ai/inference/go/v1', apiKey }),
       codex: { resolveAccessToken: async () => 'access', readCredential: async () => ({ accountId: 'acc' }) },
       now: () => NOW,
       fetch: async () => {

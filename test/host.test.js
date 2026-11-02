@@ -44,9 +44,12 @@ const loaded = await Promise.all([
   import('@deepseek-ai/dsh-client-connection/src/client/rpc.ts'),
   import('../src/index.js'),
   Promise.resolve().then(() => require.resolve('@deepseek-ai/dsh-base/package.json')),
+  // The installed catalog owns the default endpoints the plugin ships; this
+  // suite reads it back rather than trusting a constant to stay current.
+  import('@earendil-works/pi-ai/providers/opencode-go'),
 ]).then(modules => ({ modules }), error => ({ error }))
 const skip = loaded.error === undefined ? false : `peer dependencies are not installed (${loaded.error.code ?? 'import failed'})`
-const [cordis, appBoot, configEditor, settingsForms, webRpc, plugin, baseBundleManifest] = loaded.modules ?? []
+const [cordis, appBoot, configEditor, settingsForms, webRpc, plugin, baseBundleManifest, piAiOpencodeGo] = loaded.modules ?? []
 
 /** The two entry ids this plugin reads route configuration out of. */
 const READ_ENTRY_IDS = ['llm-deepseek', 'llm-pi-ai']
@@ -471,7 +474,7 @@ describe('the profile entries the API-key routes are configured in', { skip }, (
     try {
       const answer = await rpc.call({ provider: 'opencode-go' })
       assert.equal(answer.ok, true, `expected a quota window, got ${JSON.stringify(answer)}`)
-      assert.equal(upstream.calls[0].url, 'https://opencode.ai/zen/go/v1/usage')
+      assert.equal(upstream.calls[0].url, 'https://opencode.ai/inference/go/v1/usage')
       assert.equal(upstream.calls[0].auth, 'Bearer sk-from-the-cli')
       assert.equal(JSON.stringify(answer).includes('sk-from'), false, 'no key may reach the browser')
     } finally {
@@ -539,7 +542,7 @@ describe('the profile entries the API-key routes are configured in', { skip }, (
       const answer = await rpc.call({ provider: 'opencode-go' })
       assert.equal(answer.ok, true, `expected a quota window, got ${JSON.stringify(answer)}`)
       assert.deepEqual(asked, ['llm-pi-ai/opencode-go'])
-      assert.deepEqual(upstream.calls, [{ url: 'https://opencode.ai/zen/go/v1/usage', auth: 'Bearer sk-stored-for-this-route' }])
+      assert.deepEqual(upstream.calls, [{ url: 'https://opencode.ai/inference/go/v1/usage', auth: 'Bearer sk-stored-for-this-route' }])
     } finally {
       upstream.restore()
     }
@@ -603,5 +606,36 @@ describe('the profile entries the API-key routes are configured in', { skip }, (
     } finally {
       upstream.restore()
     }
+  })
+})
+
+/**
+ * The default OpenCode Go endpoint, as the installed catalog spells it.
+ *
+ * `OPENCODE_GO_BASE_URL` is the base the quota read appends `/usage` to, and
+ * when the route names no `baseURL` it is also the endpoint the model route's
+ * catalog serves. That makes it pi-ai's fact to define, not this repository's:
+ * dsh 0.2.2-alpha.2 moved it with pi-ai 1.3.0 from `.../zen/go` to
+ * `.../inference/go`, and a constant left behind kept naming the old path.
+ * Reading the catalog the host actually installs turns the next move into a
+ * failure here, where the message can say what to change, instead of at the
+ * chip as "could not read quota".
+ */
+describe('the default OpenCode Go endpoint', { skip }, () => {
+  test('is a base the installed pi-ai catalog serves for that route', () => {
+    const models = piAiOpencodeGo.opencodeGoProvider().getModels()
+    assert.ok(models.length > 0, 'the installed pi-ai catalog lists no OpenCode Go model, so this check would pass vacuously')
+    const bases = new Set(models.map(model => model.baseUrl))
+    const versioned = plugin.OPENCODE_GO_BASE_URL
+    const unversioned = versioned.replace(/\/v1$/u, '')
+    assert.notEqual(unversioned, versioned, 'the shipped base must carry the /v1 segment the /usage suffix needs')
+    for (const base of bases) {
+      assert.ok(base === versioned || base === unversioned,
+        `the installed pi-ai catalog serves OpenCode Go at ${base}, which OPENCODE_GO_BASE_URL (${versioned}) does not cover. `
+        + 'Update the constant and its comment to the catalog\'s new base; the quota read appends /usage to it.')
+    }
+    assert.ok(bases.has(versioned),
+      `the installed pi-ai catalog serves no OpenCode Go model at ${versioned}, the base of the default quota read. `
+      + 'Update OPENCODE_GO_BASE_URL and its comment to the catalog\'s versioned base.')
   })
 })

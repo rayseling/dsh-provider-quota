@@ -19,16 +19,19 @@ export const OPENAI_CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usag
  * A BASE, not a URL: {@link fetchOpencodeUsage} appends `/usage` to it, and
  * the same append runs on a `baseURL` read from the route's own settings. The
  * two have to agree on where the version segment lives, and this value carries
- * `/v1`. The installed pi-ai catalog is NOT uniform about it: the twelve
- * openai-completions models and the one openai-responses model carry
- * `.../zen/go/v1`, while the three anthropic-messages models carry
- * `.../zen/go` — that SDK appends `/v1/messages` itself. The quota read uses
- * this constant or the route's configured `baseURL`, never the model's own,
- * so the split does not reach it today. Configure the route with a base that
- * stops short of the version segment and the read goes to a path that does
- * not exist.
+ * `/v1`. The installed pi-ai catalog is NOT uniform about it: its
+ * anthropic-messages models carry `.../inference/go` — that SDK appends
+ * `/v1/messages` itself — while the rest carry the versioned
+ * `.../inference/go/v1`. The quota read uses this constant or the route's
+ * configured `baseURL`, never the model's own, so the split does not reach it
+ * today. Configure the route with a base that stops short of the version
+ * segment and the read goes to a path that does not exist.
+ *
+ * The host owns this endpoint. dsh 0.2.2-alpha.2 moved pi-ai's catalog from
+ * `/zen` to `/inference`, and `test/host.test.js` reads the installed catalog
+ * and fails when this constant drifts from it.
  */
-export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
+export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/inference/go/v1'
 
 /**
  * Static `x-opencode-session` for the quota read.
